@@ -39,9 +39,6 @@
 - **Use Bun directly.** Native file serving, Brotli/gzip compression, SSE, WebSockets, TLS, Unix sockets, and supervised Linux workers.
 - **Deploy a tested build.** Linux and macOS CI exercise real Astro builds, packed-package consumption, and concurrent requests.
 
-> [!NOTE]
-> Install from npm as `@nauverse/astro-bun`. An Astro integrations directory listing is not yet confirmed.
-
 ## Comparison
 
 This table compares built-in adapter features. Additional capabilities supplied
@@ -88,21 +85,6 @@ includes static precompression, a preview entrypoint, and configurable native
 server transports. Install it from npm as `@nauverse/astro-bun`.
 For an existing Astro 4–6 project, compare the matching version range before
 planning a migration. If your whole site is static, you do not need an SSR adapter.
-
-<details>
-<summary><strong>Comparison sources and test coverage</strong></summary>
-
-Reviewed on **2026-10-19**, against the pinned source revisions in the
-[full feature audit](./docs/feature-parity.md). The table describes those
-implementations, not a guarantee of equal behavior or a performance ranking.
-We ran our adapter's tests; we did not run every other adapter's test suite.
-
-Our [verified CI run](https://github.com/TheNaubit/astro-bun/actions/runs/39238106563)
-passed 105 tests on Linux and 104 on macOS, with platform-specific skips and no
-failures. Coverage includes SSR/ISR, sessions, actions, server islands, image
-optimization, persistence, compression, transport configuration, and worker recovery.
-
-</details>
 
 ## Requirements
 
