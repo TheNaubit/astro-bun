@@ -1,36 +1,100 @@
-<h1 align="center">
-  astro-bun
-  <br>
-</h1>
+<h1 align="center">astro-bun</h1>
 
-<h4 align="center">A Bun-native adapter for Astro 7 static pages, SSR, and opt-in ISR.</h4>
+<p align="center">
+  <strong>Static by default. SSR where you need it. Powered by Bun.</strong>
+  <br>
+  An Astro 7 adapter with opt-in ISR, native compression, and persistent caching.
+</p>
 
 <p align="center">
   <a href="https://github.com/TheNaubit/astro-bun/actions/workflows/ci.yml">
     <img src="https://github.com/TheNaubit/astro-bun/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status">
   </a>
+  <a href="https://astro.build">
+    <img src="https://img.shields.io/badge/Astro-7.4%2B-BC52EE?logo=astro&logoColor=white" alt="Astro 7.4 or later within version 7">
+  </a>
+  <a href="https://bun.sh">
+    <img src="https://img.shields.io/badge/Bun-1.4.3%2B-14151A?logo=bun&logoColor=white" alt="Bun 1.4.3 or later">
+  </a>
   <a href="https://github.com/TheNaubit/astro-bun/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/TheNaubit/astro-bun?style=flat" alt="license">
+    <img src="https://img.shields.io/github/license/TheNaubit/astro-bun?style=flat" alt="MIT license">
   </a>
 </p>
 
 <p align="center">
-  <a href="#requirements">Requirements</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#rendering">Rendering</a> •
-  <a href="#isr">ISR</a> •
-  <a href="#deployment">Deployment</a> •
-  <a href="#development">Development</a> •
-  <a href="#contribute">Contribute</a>
+  <a href="#comparison">Compare adapters</a> ·
+  <a href="#installation">Install</a> ·
+  <a href="#configuration">Quick start</a> ·
+  <a href="#rendering">Rendering</a> ·
+  <a href="#isr">ISR</a> ·
+  <a href="#deployment">Deploy</a> ·
+  <a href="#development">Development</a>
 </p>
+
+---
+
+- **Choose how each page renders.** Prerender your site and opt individual pages into SSR, or use server output for an application rendered mostly on demand.
+- **Cache when you choose.** Opt into ISR with fresh and stale windows, invalidation, and optional SQLite persistence across restarts.
+- **Use Bun directly.** Native file serving, Brotli/gzip compression, TLS, Unix sockets, and supervised Linux workers.
+- **Deploy a tested build.** Linux and macOS CI exercise real Astro builds, packed-package consumption, and concurrent requests.
+
+> [!NOTE]
+> This package is currently **private and unpublished**. Local installation is documented below; an npm release and Astro directory listing are still to come.
+
+## Comparison
+
+This table compares built-in adapter features. Additional capabilities supplied
+by reverse proxies or application code are outside its scope. **✅** supported · **❌** not provided · **⚠️** caveat.
+Astro versions refer to each repository's declared peer dependency.
+
+| Feature                             | **This adapter** | [Wyatt](https://github.com/wyattjoh/astro-bun-adapter) | [Scaliir](https://github.com/ScaliirDigital/root/tree/0f453e0105625d9455fe41b2976862a61272c9dc/packages/astro-bun) | [Nuro](https://github.com/NuroDev/astro-bun) | [Zastinian](https://github.com/Zastinian/astro-bun) | [Ido](https://github.com/ido-pluto/astro-bun-adapter) |
+| :---------------------------------- | :--------------: | :----------------------------------------------------: | :----------------------------------------------------------------------------------------------------------------: | :------------------------------------------: | :-------------------------------------------------: | :---------------------------------------------------: |
+| Astro peer range                    |    **^7.4.0**    |                         ^7.1.3                         |                                                       ^6.3.0                                                       |                    ^5.1.1                    |                       ^5.0.0                        |                        ^4.0.7                         |
+| Native Bun SSR                      |        ✅        |                           ✅                           |                                                         ✅                                                         |                      ✅                      |                         ✅                          |                          ✅                           |
+| Fully prerendered output            |        ✅        |                           ✅                           |                                                         ✅                                                         |                      ✅                      |                         ✅                          |                        ⚠️ [1]                         |
+| Opt-in ISR / stale revalidation     |        ✅        |                           ✅                           |                                                         ✅                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
+| Persistent cache across restarts    |        ✅        |                           ✅                           |                                                         ✅                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
+| Cache warm start                    |        ✅        |                           ✅                           |                                                         ✅                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
+| Build-time Brotli + gzip            |        ✅        |                           ❌                           |                                                         ✅                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
+| Configurable static cache headers   |        ✅        |                           ✅                           |                                                         ✅                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
+| Astro production preview entrypoint |        ✅        |                           ❌                           |                                                         ✅                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
+| Direct TLS configuration            |        ✅        |                           ❌                           |                                                         ❌                                                         |                      ✅                      |                         ✅                          |                          ❌                           |
+| Unix socket configuration           |        ✅        |                           ❌                           |                                                         ❌                                                         |                      ✅                      |                         ✅                          |                          ❌                           |
+| Multiple server processes           |     ✅ Linux     |                           ❌                           |                                                         ❌                                                         |                      ✅                      |                         ✅                          |                          ❌                           |
+
+[1] Ido declares static-output support but emits an unsupported-output warning.
+Its static behavior should be checked against your Astro 4 application.
+
+**Choosing an adapter.** Start with your Astro version. For Astro 7, this
+adapter and Wyatt declare compatible peer ranges; this adapter additionally
+includes static precompression, a preview entrypoint, and configurable native
+server transports. It is currently available from this private checkout only.
+For an existing Astro 4–6 project, compare the matching version range before
+planning a migration. If your whole site is static, you do not need an SSR adapter.
+
+<details>
+<summary><strong>Comparison sources and test coverage</strong></summary>
+
+Reviewed on **2026-10-19**, against the pinned source revisions in the
+[full feature audit](./docs/feature-parity.md). The table describes those
+implementations, not a guarantee of equal behavior or a performance ranking.
+We ran our adapter's tests; we did not run every other adapter's test suite.
+
+Our [verified CI run](https://github.com/TheNaubit/astro-bun/actions/runs/39234903761)
+passed 88 tests on Linux and 87 on macOS, with platform-specific skips and no
+failures. Coverage includes SSR/ISR, sessions, actions, server islands, image
+optimization, persistence, compression, transport configuration, and worker recovery.
+
+</details>
 
 ## Requirements
 
-- Astro `>=7.4.0 <8`
-- Bun `>=1.4.3`
+| Dependency | Supported version |
+| :--------- | :---------------- |
+| Astro      | `>=7.4.0 <8`      |
+| Bun        | `>=1.4.3`         |
 
-This adapter supports Astro 7 only. Astro's build tooling still needs a runtime supported by Astro; Bun runs the built production server.
+Build and run the application through Bun using the commands below.
 
 ## Installation
 
@@ -74,7 +138,8 @@ only when executed directly. `bun({ mode: 'handler' })` emits the same
 entrypoint without listening on import, for hosts that call its exported
 `handler` or `start` functions themselves.
 
-### Adapter options
+<details>
+<summary><strong>Advanced adapter and server options</strong></summary>
 
 ```ts
 adapter: bun({
@@ -128,24 +193,14 @@ explicit override, `HOST`/`PORT` override Astro's configured TCP host/port;
 `TLS_KEY_PATH` override configured TLS as a complete pair. Astro's default
 configured host is `localhost`. The TLS environment pair must be complete.
 
+</details>
+
 ## Rendering
 
 ### Static site with selected SSR pages
 
-Use `output: 'static'` (Astro's default) when most pages should be generated at
-build time and only selected pages need SSR:
-
-```ts
-import { defineConfig } from 'astro/config'
-import bun from '@nauverse/astro-bun'
-
-export default defineConfig({
-  output: 'static',
-  adapter: bun(),
-})
-```
-
-Opt each page that needs SSR into on-demand rendering:
+The [quick-start configuration](#configuration) uses `output: 'static'`,
+Astro's default. Opt each page that needs SSR into on-demand rendering:
 
 ```astro
 ---
@@ -239,6 +294,9 @@ They invalidate all live providers in the current process. In a multi-process
 deployment with persistence, application-level coordination is still required
 to notify each machine.
 
+<details>
+<summary><strong>Memory limits and cache safety</strong></summary>
+
 You can tune the in-process tier with:
 
 ```ts
@@ -267,6 +325,10 @@ ordinary browser-cached responses are not promoted into ISR. Server-island
 responses always bypass ISR.
 
 The adapter installs its cache provider only when the project has not configured one. Pass `cache: false` to `bun()` to disable that automatic provider; an existing custom Astro cache provider is always respected.
+
+</details>
+
+### Persistent cache
 
 For durable ISR, configure an explicit directory. The adapter embeds a unique
 build identity as the default namespace; set `namespace` yourself when your
@@ -357,4 +419,4 @@ Contributions of any kind are welcome. Please read the [contributing guide](./CO
 
 ## License
 
-MIT
+[MIT](./LICENSE) © Nauverse
