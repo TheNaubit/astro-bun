@@ -269,9 +269,8 @@ programmatic startup, Unix sockets, and TLS.
 On Linux, `workers: N` supervises N Bun processes that share a TCP port through
 native `reusePort`. The supervisor restarts unexpectedly exited workers with a
 short delay and stops after repeated crashes. This mode rejects port `0` and
-Unix sockets. Linux CI coverage for the process-supervisor flow is pending at
-the time of this documentation update; do not treat it as production-verified
-until that check is green.
+Unix sockets. Linux CI exercises multiple workers, replacement after a worker
+is killed, the repeated-exit cutoff, and graceful parent shutdown.
 
 Install the application's dependencies in the deployment environment and copy the complete generated `dist/` tree, including both client and server output. The adapter resolves static artifacts relative to the emitted server entrypoint, so the completed build can be moved without retaining build-machine paths. It does not bundle a separate runtime or use a runtime loader hack.
 
