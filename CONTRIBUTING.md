@@ -27,15 +27,15 @@ The build output goes to `dist/`.
 - Format with `bun run format` and make `bun run lint` pass before opening a pull request.
 - Keep documentation accurate when public behavior changes.
 - Use [Conventional Commits](https://www.conventionalcommits.org): `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, or `ci:`.
-- Do not change `version` by hand. This private repository has no publishing workflow.
+- Do not change `version` by hand. This repository has no automated publishing workflow.
 
 ## Preparing a public release
 
-The repository and package are currently private. Publishing is a separate release decision.
-Before a public release, make the GitHub repository public, remove `private: true` from
-`package.json`, update the README installation instructions for the npm release, and run
-all checks plus `npm pack --dry-run`. Publish the scoped package with public access and
-provenance using a reviewed release workflow or a maintainer session.
+Publishing requires an explicit release decision. Before a release, run all checks
+plus `npm pack --dry-run`, inspect the package contents, and publish the scoped
+package with public access. The initial `0.1.0` release uses a maintainer session
+without provenance; future provenance attestations require a supported CI release
+workflow. The GitHub repository visibility is managed separately from npm access.
 
 The package already includes `astro-integration` and `withastro` for discovery and
 `astro-adapter` for the Adapters category. Astro reads `name`, `description`, `repository`,
