@@ -61,7 +61,7 @@ Astro versions refer to each repository's declared peer dependency.
 | Astro production preview entrypoint           |        ✅        |                           ❌                           |                                                         ✅                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
 | Direct TLS configuration                      |        ✅        |                           ❌                           |                                                         ❌                                                         |                      ✅                      |                         ✅                          |                          ❌                           |
 | Unix socket configuration                     |        ✅        |                           ❌                           |                                                         ❌                                                         |                      ✅                      |                         ✅                          |                          ❌                           |
-| Multiple server processes                     |     ✅ Linux     |                           ❌                           |                                                         ❌                                                         |                      ✅                      |                         ✅                          |                          ❌                           |
+| Multiple processes sharing one port [4]       |     ✅ Linux     |                           ❌                           |                                                         ❌                                                         |                    ⚠️ [4]                    |                       ⚠️ [4]                        |                          ❌                           |
 | Automatic per-request SSE timeout control [2] |        ✅        |                           ❌                           |                                                         ❌                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
 | Native WebSocket endpoint configuration       |        ✅        |                           ❌                           |                                                         ❌                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
 | Opt-in native HTTP/2 [3]                      |        ✅        |                           ❌                           |                                                         ❌                                                         |                      ❌                      |                         ❌                          |                          ❌                           |
@@ -75,6 +75,12 @@ a global idle-timeout option, which is different from a per-request SSE policy.
 
 [3] HTTP/2 is opt-in and experimental in Bun. This row concerns an adapter
 option; HTTP/2 supplied by a reverse proxy is outside the comparison.
+
+[4] Nuro and Zastinian expose cluster options, but this does not establish
+cross-platform load balancing. Nuro forks `Bun.serve()` without `reusePort`;
+Zastinian enables it. Bun documents native same-port HTTP load balancing as
+[Linux-only](https://bun.sh/guides/http/cluster). See the
+[feature audit](./docs/feature-parity.md) for source details and macOS probes.
 
 **Choosing an adapter.** Start with your Astro version. For Astro 7, this
 adapter and Wyatt declare compatible peer ranges; this adapter additionally
@@ -516,6 +522,11 @@ native `reusePort`. The supervisor restarts unexpectedly exited workers with a
 short delay and stops after repeated crashes. This mode rejects port `0` and
 Unix sockets. Linux CI exercises multiple workers, replacement after a worker
 is killed, the repeated-exit cutoff, and graceful parent shutdown.
+
+On other operating systems, run independent instances with `workers: 1` on
+different ports behind a reverse proxy or load balancer. Same-port native
+load balancing remains Linux-only; starting multiple processes alone does not
+ensure requests are distributed between them.
 
 Install the application's dependencies in the deployment environment and copy the complete generated `dist/` tree, including both client and server output. The adapter resolves static artifacts relative to the emitted server entrypoint, so the completed build can be moved without retaining build-machine paths. It does not bundle a separate runtime or use a runtime loader hack.
 

@@ -176,3 +176,20 @@ See [the real-time guide](../README.md#real-time),
 [`tests/integration.test.ts`](../tests/integration.test.ts),
 [`tests/websocket.test.ts`](../tests/websocket.test.ts), and
 [`tests/modes.test.ts`](../tests/modes.test.ts).
+
+### Multi-process platform caveat
+
+The cluster options in Nuro and Zastinian are not evidence of cross-platform
+HTTP load balancing. Nuro forks `Bun.serve()` workers without `reusePort`;
+Zastinian enables `reusePort` when clustering. Bun documents native same-port
+HTTP load balancing as [Linux-only](https://bun.sh/guides/http/cluster).
+
+Minimal reproductions of these process patterns on macOS with Bun 1.4.3
+(2026-10-19) found that, without `reusePort`, the second worker failed with
+`EADDRINUSE`. With `reusePort`, both workers listened, but all 100 serial HTTP
+requests with `Connection: close` reached a single worker. These were isolated
+runtime probes, not end-to-end tests of the competitor packages; Windows was
+not tested. The README therefore marks their cluster support with a caveat.
+Our same-port supervisor remains Linux-only and is exercised in Linux CI.
+Independent instances on separate ports can instead sit behind an external
+load balancer on other operating systems.
