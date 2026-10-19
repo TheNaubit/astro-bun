@@ -68,14 +68,23 @@ Keep error responses generic in production and log details server-side.
 ### ISR
 
 Use Astro 7's official `CacheProvider` API rather than route-module rewriting
-or virtual-module runtime patches. The provider should be process-local and
-bounded by bytes, with cache entries keyed by the complete request variant that
-can affect rendering. Cache only explicitly cacheable responses and reject
-`private`, `no-store`, `Set-Cookie`, and unsupported `Vary` responses. Model
-freshness and stale-while-revalidate from HTTP cache directives, coalesce
-concurrent renders for the same key, and safely discard failed revalidations.
-This first implementation should avoid durable cache persistence until its
-atomic-write, corruption, cross-process, and deployment semantics are tested.
+or virtual-module runtime patches. Cache only explicitly cacheable responses
+and reject `private`, `no-store`, `Set-Cookie`, and unsupported `Vary`
+responses. Model freshness and stale-while-revalidate from HTTP cache
+directives, coalesce concurrent renders for the same key, and safely discard
+failed revalidations.
+
+The original 2026-10-19 recommendation to avoid durable persistence was a
+temporary risk-control measure while atomicity, corruption, cross-process
+ordering, and deployment namespaces were unproven. It is superseded by the
+opt-in SQLite tier: it has a dedicated directory, a deployment namespace
+(a generated build identity by default), transactional revisions, and a
+fail-open path that preserves a
+corrupt database for diagnosis. Its logical byte and entry limits cover cached
+response bodies, while SQLite metadata, WAL, and physical allocation may use
+more disk. The implementation is tested for restart, namespace separation,
+exact invalidation, obsolete writes, and corrupt-database fail-open; it still
+does not synchronize caches across separate machines.
 
 ### Native Bun features
 
@@ -92,4 +101,12 @@ Use platform APIs for request/response headers and standard Web Fetch types.
 3. SSR receives cookies, query strings, environment values, and direct client
    address when available.
 4. ISR verifies miss, hit, expiry, stale response, background revalidation,
-   concurrent-request coalescing, and rejection of unsafe cache responses.
+   concurrent-request coalescing, rejection of unsafe responses, restart
+   persistence, namespace separation, disk-limit eviction, and fail-open
+   corruption handling.
+5. Compression has unit and emitted-Astro-build coverage for native
+   Brotli/gzip representations, quality-value negotiation, validators, HEAD,
+   range identity selection, static policy overrides, and opt-out behavior.
+6. Server options have unit/runtime coverage for configuration, environment,
+   and `start()` precedence, Unix sockets, TLS, and trusted-proxy CIDRs. Linux
+   worker lifecycle coverage remains pending CI verification.

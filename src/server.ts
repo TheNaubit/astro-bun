@@ -1,13 +1,21 @@
 import config from 'virtual:astro-bun-config'
 import { createApp } from 'astro/app/entrypoint'
 import { setGetEnv } from 'astro/env/setup'
+import {
+  createTrustedProxyList,
+  getClientAddress,
+  resolveServerOptions,
+  toBunTLS,
+  type ServerOptions,
+} from './runtime-options.js'
 import { type AssetManifest, createStaticHandler } from './static.js'
 
 setGetEnv((key) => Bun.env[key])
 const app = createApp()
-const manifestURL = new URL('./bun-assets.json', import.meta.url)
+const manifestURL = new URL(config.assetManifest, import.meta.url)
 const assets = (await Bun.file(manifestURL).json()) as AssetManifest
 const serveStatic = createStaticHandler(assets, manifestURL)
+const defaultTrustedProxies = createTrustedProxyList(config.server.trustedProxies)
 const pending = new Set<Promise<unknown>>()
 function waitUntil(promise: Promise<unknown>) {
   const task = promise.catch(() => {
@@ -17,12 +25,22 @@ function waitUntil(promise: Promise<unknown>) {
   void task.finally(() => pending.delete(task))
 }
 
-export async function handler(request: Request, server?: Bun.Server<undefined>): Promise<Response> {
+export async function handler(
+  request: Request,
+  server?: Bun.Server<undefined>,
+  trustedProxies?: typeof defaultTrustedProxies | null,
+): Promise<Response> {
   const staticResponse = serveStatic(request)
   if (staticResponse) return staticResponse
   const response = await app.render(request, {
     addCookieHeader: true,
-    clientAddress: server?.requestIP(request)?.address,
+    clientAddress: server
+      ? getClientAddress(
+          request,
+          server,
+          trustedProxies === undefined ? defaultTrustedProxies : (trustedProxies ?? undefined),
+        )
+      : undefined,
     waitUntil,
     prerenderedErrorPageFetch: async (path) =>
       serveStatic(new Request(new URL(path, request.url))) ?? new Response(null, { status: 404 }),
@@ -38,37 +56,65 @@ export async function handler(request: Request, server?: Bun.Server<undefined>):
   return response
 }
 
-export function start(options: { hostname?: string; port?: number } = {}) {
-  const port = options.port ?? Number(Bun.env.PORT ?? 4321)
-  if (!Number.isInteger(port) || port < 0 || port > 65535)
-    throw new Error('PORT must be an integer from 0 to 65535')
-  const server = Bun.serve({
-    hostname: options.hostname ?? Bun.env.HOST ?? '0.0.0.0',
-    port,
+export function start(options: ServerOptions = {}) {
+  const runtime = resolveServerOptions(config.server, options)
+  const trustedProxies = createTrustedProxyList(runtime.trustedProxies)
+  const common = {
     development: false,
     maxRequestBodySize: config.maxRequestBodySize,
-    fetch: handler,
+    fetch(request: Request, server: Bun.Server<undefined>) {
+      return handler(request, server, trustedProxies ?? null)
+    },
     error() {
       app.adapterLogger.error('Request failed')
       return new Response('Internal Server Error', { status: 500 })
     },
+  }
+  const tls = toBunTLS(runtime.tls, runtime.lowMemoryMode)
+  if (runtime.unix) {
+    return Bun.serve({
+      ...common,
+      unix: runtime.unix,
+      ...(tls ? { tls } : {}),
+    })
+  }
+  return Bun.serve({
+    ...common,
+    hostname: runtime.hostname!,
+    port: runtime.port!,
+    ...(runtime.idleTimeout === undefined ? {} : { idleTimeout: runtime.idleTimeout }),
+    ...(runtime.reusePort === undefined ? {} : { reusePort: runtime.reusePort }),
+    ...(tls ? { tls } : {}),
   })
-  return server
 }
 
 if (config.mode === 'standalone' && import.meta.main) {
-  const server = start()
-  app.adapterLogger.info(`Listening on ${server.url}`)
-  let stopping = false
-  const shutdown = async () => {
-    if (stopping) return
-    stopping = true
-    const timeout = setTimeout(() => process.exit(1), 10_000)
-    timeout.unref()
-    await server.stop()
-    await Promise.allSettled(pending)
-    clearTimeout(timeout)
+  if (config.workers > 1 && !Bun.env.ASTRO_BUN_WORKER) {
+    const runtime = resolveServerOptions(config.server)
+    if (runtime.unix || runtime.port === 0)
+      throw new Error('Multiple Bun workers require a fixed TCP port, not a Unix socket or port 0')
+    const { supervise } = await import('./cluster.js')
+    await supervise({
+      entrypoint: import.meta.path,
+      workers: config.workers,
+      shutdownTimeoutMs: config.shutdownTimeoutMs,
+    })
+  } else {
+    const server = start(config.workers > 1 ? { reusePort: true } : {})
+    app.adapterLogger.info(
+      `Listening on ${config.server.unix ? `Unix socket ${config.server.unix}` : server.url}`,
+    )
+    let stopping = false
+    const shutdown = async () => {
+      if (stopping) return
+      stopping = true
+      const timeout = setTimeout(() => process.exit(1), config.shutdownTimeoutMs)
+      timeout.unref()
+      await server.stop()
+      await Promise.allSettled(pending)
+      clearTimeout(timeout)
+    }
+    process.once('SIGINT', shutdown)
+    process.once('SIGTERM', shutdown)
   }
-  process.once('SIGINT', shutdown)
-  process.once('SIGTERM', shutdown)
 }

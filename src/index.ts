@@ -1,30 +1,70 @@
 import { realpath } from 'node:fs/promises'
-import { relative, resolve, sep } from 'node:path'
+import { dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AstroConfig, AstroIntegration } from 'astro'
 import type { BunCacheOptions as CacheOptions } from './cache.js'
+import { type ServerOptions, validateServerOptions } from './runtime-options.js'
+import { compressAsset } from './compression.js'
 import type { AssetManifest } from './static.js'
+
+export type AdapterCacheOptions = Omit<CacheOptions, 'persistence' | 'imageEndpointRoute'> & {
+  persistence?: Omit<NonNullable<CacheOptions['persistence']>, 'namespace'> & {
+    /** Defaults to a unique build identity embedded in the generated app. */
+    namespace?: string
+  }
+}
 
 export interface Options {
   /** Default standalone server; handler mode exports handler without listening. */
   mode?: 'standalone' | 'handler'
-  /** Bounded, process-local ISR. Pages must opt in with Astro.cache.set or routeRules. */
-  cache?: false | CacheOptions
+  /** Bounded ISR with optional SQLite persistence. Pages require a shared-cache policy. */
+  cache?: false | AdapterCacheOptions
+  /** Precompress static text assets using native Brotli and gzip. Defaults to true. */
+  compress?: boolean
+  /** Cache-Control for unhashed public files; route headers take precedence. */
+  staticCacheControl?: string
+  /** Number of supervised Bun processes. More than one requires Linux. */
+  workers?: number
+  shutdownTimeoutMs?: number
+  server?: ServerOptions
   maxRequestBodySize?: number
 }
 
 export default function bunAdapter(options: Options = {}): AstroIntegration {
   if (options.mode && !['standalone', 'handler'].includes(options.mode))
     throw new Error('Invalid adapter mode')
+  validateServerOptions(options.server)
+  const buildIdentity = crypto.randomUUID()
+  const cacheOptions = options.cache === false ? undefined : options.cache
+  const { persistence, ...memoryOptions } = cacheOptions ?? {}
+  const cacheProviderOptions: CacheOptions = {
+    ...memoryOptions,
+    ...(persistence
+      ? { persistence: { ...persistence, namespace: persistence.namespace ?? buildIdentity } }
+      : {}),
+  }
+  const workers = options.workers ?? 1
+  const shutdownTimeoutMs = options.shutdownTimeoutMs ?? 10_000
+  if (!Number.isSafeInteger(workers) || workers < 1 || workers > 256)
+    throw new Error('workers must be an integer from 1 to 256')
+  if (!Number.isSafeInteger(shutdownTimeoutMs) || shutdownTimeoutMs < 1)
+    throw new Error('shutdownTimeoutMs must be a positive integer')
+  if (workers > 1 && options.server?.port === 0)
+    throw new Error('Multiple workers require a fixed TCP port')
+  if (workers > 1 && options.server?.unix)
+    throw new Error('Multiple workers require TCP, not a shared Unix socket')
   const bodyLimit = options.maxRequestBodySize ?? 10 * 1024 * 1024
   if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1)
     throw new Error('maxRequestBodySize must be a positive integer')
+  const staticCacheControl = options.staticCacheControl ?? 'public, max-age=0, must-revalidate'
+  new Headers({ 'cache-control': staticCacheControl })
   let config: AstroConfig
   let staticHeaders = new Map<string, Headers>()
   return {
     name: '@nauverse/astro-bun',
     hooks: {
       'astro:config:setup': ({ updateConfig, config: current, command }) => {
+        config = current
         updateConfig({
           build: { redirects: false },
           ...(options.cache !== false && !current.cache?.provider
@@ -33,7 +73,10 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
                   provider: {
                     name: 'bun',
                     entrypoint: new URL('./cache.js', import.meta.url),
-                    config: options.cache ?? {},
+                    config: {
+                      ...cacheProviderOptions,
+                      imageEndpointRoute: `${current.base.replace(/\/$/, '')}/${(current.image.endpoint.route ?? '_image').replace(/^\//, '')}`,
+                    },
                   },
                 },
               }
@@ -60,7 +103,7 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
                 },
                 load(id) {
                   if (id !== '\0virtual:astro-bun-config') return
-                  return `export default ${JSON.stringify({ mode: options.mode ?? 'standalone', maxRequestBodySize: bodyLimit })}`
+                  return `export default ${JSON.stringify({ mode: options.mode ?? 'standalone', workers, shutdownTimeoutMs, maxRequestBodySize: bodyLimit, server: options.server?.unix ? options.server : { hostname: typeof config.server.host === 'string' ? config.server.host : config.server.host ? '0.0.0.0' : 'localhost', port: config.server.port, ...options.server }, assetManifest: relative(dirname(config.build.serverEntry), 'bun-assets.json').split(sep).join('/') || 'bun-assets.json' })}`
                 },
               },
             ],
@@ -98,6 +141,7 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
             hybridOutput: 'stable',
             sharpImageService: 'stable',
             envGetSecret: 'stable',
+            i18nDomains: 'stable',
           },
         })
       },
@@ -125,10 +169,15 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
           const headers: Record<string, string> = {
             etag: etag,
             'content-type': file.endsWith('.html') ? 'text/html; charset=utf-8' : blob.type,
-            'cache-control': 'public, max-age=0, must-revalidate',
+            'cache-control': staticCacheControl,
+            'x-astro-cache': 'STATIC',
           }
           if (file.startsWith(config.build.assets + '/'))
             headers['cache-control'] = 'public, max-age=31536000, immutable'
+          const encodings =
+            options.compress !== false && /\.(?:html|css|js|mjs|svg|json|xml|txt|map)$/i.test(file)
+              ? await compressAsset(absolute, config.build.server)
+              : undefined
           const names = [pathname]
           if (file.endsWith('/index.html') || file === 'index.html') {
             const route = pathname.slice(0, -'index.html'.length)
@@ -150,10 +199,12 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
             routeHeaders?.forEach((value, key) => {
               merged.set(key, value)
             })
+            merged.set('x-astro-cache', 'STATIC')
             if (merged.has('set-cookie'))
               throw new Error('Prerendered pages must not set cookies; use SSR instead')
             assets[name] = {
               file,
+              encodings,
               headers: Object.fromEntries(merged),
             }
           }

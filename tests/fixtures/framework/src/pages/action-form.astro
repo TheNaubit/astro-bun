@@ -1,0 +1,9 @@
+---
+import { actions } from 'astro:actions'
+
+const result = Astro.getActionResult(actions.formEcho)
+---
+<form method="post" action={actions.formEcho}>
+  <input name="message" />
+</form>
+{result?.data && <p id="action-result">{result.data.received}</p>}

@@ -9,6 +9,9 @@ const fixture = join(root, 'tests/fixtures/site')
 let server: Bun.Server<undefined>
 let relocated: string
 let origin: string
+let startServer: (
+  options?: import('../src/runtime-options.js').ServerOptions,
+) => Bun.Server<undefined>
 async function command(args: string[]) {
   const child = Bun.spawn(args, {
     cwd: root,
@@ -33,6 +36,7 @@ beforeAll(async () => {
   await symlink(join(root, 'node_modules'), join(relocated, 'node_modules'), 'dir')
   await rm(join(fixture, 'dist'), { recursive: true })
   const { start } = await import(join(relocated, 'server/entry.mjs'))
+  startServer = start
   server = start({ hostname: '127.0.0.1', port: 0 })
   origin = server.url.origin
 }, 60_000)
@@ -46,6 +50,7 @@ test('relocated build serves prerendered page, headers, assets and conditional r
   const response = await get('/')
   expect(response.status).toBe(200)
   expect(response.headers.get('x-static-header')).toBe('preserved')
+  expect(response.headers.get('cache-control')).toBe('public, max-age=17')
   expect(await response.text()).toContain('Static home')
   const asset = await get('/asset.txt')
   expect(await asset.text()).toBe('native static file\n')
@@ -138,4 +143,69 @@ test('SSR exceptions return a custom 500 page without exposing internal details'
   const body = await response.text()
   expect(body).toContain('Custom server error')
   expect(body).not.toContain('private-error-marker')
+})
+
+test('built server serves static and SSR pages through a Unix socket', async () => {
+  const socket = join(relocated, 'adapter.sock')
+  const unix = startServer({ unix: socket })
+  try {
+    expect(await (await fetch('http://localhost/', { unix: socket })).text()).toContain(
+      'Static home',
+    )
+    expect(await (await fetch('http://localhost/ssr', { unix: socket })).text()).toContain('SSR')
+  } finally {
+    await unix.stop(true)
+  }
+})
+
+test('built server applies proxy trust without accepting direct-client spoofing', async () => {
+  const direct = await get('/api/echo', {
+    method: 'POST',
+    headers: { 'x-forwarded-for': '203.0.113.8' },
+    body: 'direct',
+  })
+  expect((await direct.json()).clientAddress).toBe('127.0.0.1')
+  const trusted = startServer({ hostname: '127.0.0.1', port: 0, trustedProxies: ['127.0.0.1'] })
+  try {
+    const response = await fetch(new URL('/api/echo', trusted.url), {
+      method: 'POST',
+      headers: { 'x-forwarded-for': '203.0.113.8' },
+      body: 'trusted',
+    })
+    expect((await response.json()).clientAddress).toBe('203.0.113.8')
+  } finally {
+    await trusted.stop(true)
+  }
+})
+
+test('built server serves HTTPS with explicit certificate files', async () => {
+  const certPath = join(relocated, 'test-cert.pem')
+  const keyPath = join(relocated, 'test-key.pem')
+  const generate = Bun.spawn(
+    [
+      'openssl',
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-keyout',
+      keyPath,
+      '-out',
+      certPath,
+      '-subj',
+      '/CN=localhost',
+      '-days',
+      '1',
+    ],
+    { stdout: 'ignore', stderr: 'ignore' },
+  )
+  expect(await generate.exited).toBe(0)
+  const tls = startServer({ hostname: '127.0.0.1', port: 0, tls: { certPath, keyPath } })
+  try {
+    const response = await fetch(tls.url, { tls: { rejectUnauthorized: false } })
+    expect(await response.text()).toContain('Static home')
+  } finally {
+    await tls.stop(true)
+  }
 })

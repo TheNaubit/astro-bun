@@ -5,3 +5,7 @@ test('adapter rejects invalid modes and request body limits', () => {
   for (const maxRequestBodySize of [0, -1, NaN, Infinity, 1.5])
     expect(() => adapter({ maxRequestBodySize })).toThrow()
 })
+
+test('static cache policy rejects header injection', () => {
+  expect(() => adapter({ staticCacheControl: 'public\r\nset-cookie: injected=1' })).toThrow()
+})
