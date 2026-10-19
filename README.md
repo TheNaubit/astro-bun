@@ -64,9 +64,64 @@ export default defineConfig({
 })
 ```
 
-`bun()` starts in standalone mode. It emits a Bun server entrypoint that listens only when executed directly. `bun({ mode: "handler" })` emits the same entrypoint without listening on import, for hosts that call its exported `handler` or `start` functions themselves.
+`bun()` starts in standalone mode. It emits a Bun server entrypoint that listens
+only when executed directly. `bun({ mode: 'handler' })` emits the same
+entrypoint without listening on import, for hosts that call its exported
+`handler` or `start` functions themselves.
 
-The optional `maxRequestBodySize` limits request bodies accepted by Bun. It defaults to 10 MiB and must be a positive integer.
+### Adapter options
+
+```ts
+adapter: bun({
+  // Default: true. Generates Brotli and gzip representations for compressible
+  // static text assets. The server negotiates Accept-Encoding at request time.
+  compress: true,
+
+  // Default: public, max-age=0, must-revalidate. Route-level Astro headers
+  // take precedence. Hashed Astro assets remain immutable for one year.
+  staticCacheControl: 'public, max-age=3600, must-revalidate',
+
+  // Default: 10 MiB. Must be a positive safe integer.
+  maxRequestBodySize: 10 * 1024 * 1024,
+
+  // Default: one process. Multiple workers require Linux and a fixed TCP port.
+  workers: 1,
+  shutdownTimeoutMs: 10_000,
+
+  server: {
+    // These are the build-configured defaults. At runtime, HOST and PORT take
+    // precedence; explicit start() arguments take precedence over both.
+    hostname: 'localhost',
+    port: 4321,
+    idleTimeout: 10,
+    reusePort: false,
+    lowMemoryMode: false,
+
+    // Use `unix` instead of hostname/port/reusePort for a Unix-domain socket.
+    // unix: '/run/astro-bun.sock',
+
+    // TLS files are opened by Bun at runtime. TLS_CERT_PATH and TLS_KEY_PATH
+    // override these paths together.
+    // tls: { certPath: '/run/secrets/cert.pem', keyPath: '/run/secrets/key.pem' },
+
+    // Only these direct peers may supply X-Forwarded-For. Addresses and
+    // non-catch-all IPv4/IPv6 CIDRs are accepted.
+    // trustedProxies: ['127.0.0.1', '2001:db8::/32'],
+  },
+})
+```
+
+`unix` cannot be combined with `hostname`, `port`, or `reusePort`. The adapter
+does not trust forwarded client addresses unless the direct peer matches
+`trustedProxies`; it then walks `X-Forwarded-For` from right to left, skipping
+trusted proxy hops. Avoid a catch-all proxy CIDR.
+
+`start(overrides)` accepts the same `server` fields. Explicit `start()` TCP,
+Unix, and TLS fields override environment and configured fields. Without an
+explicit override, `HOST`/`PORT` override Astro's configured TCP host/port;
+`UNIX` overrides the configured socket; and `TLS_CERT_PATH` plus
+`TLS_KEY_PATH` override configured TLS as a complete pair. Astro's default
+configured host is `localhost`. The TLS environment pair must be complete.
 
 ## Rendering
 
@@ -82,11 +137,19 @@ export const prerender = true;
 <h1>Static page</h1>
 ```
 
-The adapter writes a build-time allowlist for generated public files and route aliases. The runtime serves only entries in that manifest through `Bun.file`, preserving Astro route headers and using ETags for conditional requests.
+The adapter writes a build-time allowlist for generated public files and route
+aliases. The runtime serves only entries in that manifest through `Bun.file`,
+preserving Astro route headers, native ranges, and ETags for conditional
+requests. It emits Brotli and gzip variants for compressible static text assets
+unless `compress: false`; negotiation sets `Vary: Accept-Encoding` and uses a
+representation-specific ETag. A range request uses identity when acceptable.
 
 ### SSR
 
-With `output: "server"`, routes render on demand unless they opt into prerendering. The server uses `Bun.serve` and Astro's server entrypoint. It passes Bun's direct peer address to Astro when Bun provides one; it does not infer a client address from proxy headers.
+With `output: 'server'`, routes render on demand unless they opt into
+prerendering. The server uses `Bun.serve` and Astro's server entrypoint. It
+passes Bun's direct peer address to Astro by default. A forwarded address is
+used only when the direct peer is explicitly trusted as described above.
 
 ## ISR
 
@@ -116,16 +179,79 @@ runs in the background. After that window, a request waits for a fresh render.
 Use `context.cache.invalidate({ tags: ['posts'] })` or an exact path including its query
 string from an authenticated endpoint to invalidate local entries.
 
-You can tune the provider with `bun({ cache: { maxEntries: 1000, maxBytes: 67108864,
-maxBodyBytes: 1048576, maxInflight: 100, maxCacheBodyTimeMs: 1000 } })`. These are the
-defaults: 1,000 entries, 64 MiB of cached body bytes, 1 MiB per body, 100 in-flight cache
-operations, and one second to read a cacheable body. SSR routes without cache policy
-continue streaming normally. Event streams and responses with any `Vary` header bypass
-storage. Cached pages must be public and independent of request headers or client IP.
+For a cache invalidation endpoint outside an Astro request context, import the
+process-local helpers:
+
+```ts
+import { expireAll, expirePath } from '@nauverse/astro-bun/cache'
+
+await expirePath('/blog/example?draft=0')
+await expireAll()
+```
+
+They invalidate all live providers in the current process. In a multi-process
+deployment with persistence, application-level coordination is still required
+to notify each machine.
+
+You can tune the in-process tier with:
+
+```ts
+adapter: bun({
+  cache: {
+    maxEntries: 1_000,
+    maxBytes: 64 * 1024 * 1024,
+    maxBodyBytes: 1024 * 1024,
+    maxInflight: 100,
+    maxCacheBodyTimeMs: 1_000,
+  },
+})
+```
+
+These are the defaults. The byte limits refer to cached response bodies, not
+HTTP headers or process RSS. SSR routes without an explicit shared-cache policy
+continue streaming normally. Event streams and responses with any `Vary`
+header bypass storage. Cached pages must be public and independent of request
+headers or client IP.
+
+Astro's configured image endpoint is the one exception to the shared-cache
+directive requirement: its own public `max-age` policy is accepted for that
+exact endpoint only. Image cache keys preserve custom query parameters, while
+the known Astro transformation parameters are normalized. Lookalike paths and
+ordinary browser-cached responses are not promoted into ISR. Server-island
+responses always bypass ISR.
 
 The adapter installs its cache provider only when the project has not configured one. Pass `cache: false` to `bun()` to disable that automatic provider; an existing custom Astro cache provider is always respected.
 
-The included provider is bounded, process-local, and nonpersistent. Restarting the server clears it. It does not synchronize or invalidate entries across replicas. It bypasses cache storage for credentialed requests and responses that are private, uncacheable, vary unsafely, or set cookies. Protect any invalidation endpoint with your application's authentication and authorization; the adapter does not add an authentication endpoint.
+For durable ISR, configure an explicit directory. The adapter embeds a unique
+build identity as the default namespace; set `namespace` yourself when your
+deployment system has a stable release identifier:
+
+```ts
+adapter: bun({
+  cache: {
+    persistence: {
+      directory: '/var/cache/my-app/astro-bun',
+      namespace: process.env.DEPLOYMENT_ID,
+      maxDiskBytes: 256 * 1024 * 1024,
+      maxDiskEntries: 10_000,
+      preFillMemory: true,
+    },
+  },
+})
+```
+
+The SQLite tier is opt-in. Its logical limits apply to cached response bodies
+and entry count across every namespace in that database; SQLite metadata,
+WAL, and filesystem allocation mean physical disk use can be larger. Entries
+never cross namespaces. The tier uses transactional revision checks to
+coordinate processes, and a corrupt or unavailable dedicated database fails
+open to SSR while preserving it for diagnosis. It does not make the cache a
+replacement for a distributed cache shared across machines.
+
+The provider bypasses storage for credentialed requests and responses that are
+private, uncacheable, vary unsafely, or set cookies. Protect any invalidation
+endpoint with application authentication and authorization; the adapter does
+not add one.
 
 ## Deployment
 
@@ -136,7 +262,16 @@ bun --bun astro build
 bun dist/server/entry.mjs
 ```
 
-`HOST` and `PORT` configure the standalone server. `PORT` defaults to `4321`; `HOST` defaults to `0.0.0.0`.
+`HOST` and `PORT` configure TCP standalone startup. `PORT` defaults to `4321`;
+Astro's default configured host is `localhost`. See the configuration precedence above for
+programmatic startup, Unix sockets, and TLS.
+
+On Linux, `workers: N` supervises N Bun processes that share a TCP port through
+native `reusePort`. The supervisor restarts unexpectedly exited workers with a
+short delay and stops after repeated crashes. This mode rejects port `0` and
+Unix sockets. Linux CI coverage for the process-supervisor flow is pending at
+the time of this documentation update; do not treat it as production-verified
+until that check is green.
 
 Install the application's dependencies in the deployment environment and copy the complete generated `dist/` tree, including both client and server output. The adapter resolves static artifacts relative to the emitted server entrypoint, so the completed build can be moved without retaining build-machine paths. It does not bundle a separate runtime or use a runtime loader hack.
 
@@ -146,8 +281,9 @@ For local production preview, use Astro's standard command through Bun:
 bun --bun astro preview
 ```
 
-When embedding `handler` in another server, configure that server's request limits and
-error boundary. Neither handler mode nor standalone mode trusts forwarded IP headers.
+When embedding `handler` in another server, configure that server's request
+limits and error boundary. Handler mode does not infer peer or forwarded IP
+addresses because the embedding server owns that trust boundary.
 
 Astro session support requires an explicit session driver in the application's Astro configuration. This adapter does not choose a default session driver.
 

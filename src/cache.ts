@@ -1,9 +1,24 @@
 import type { CacheProvider, CacheProviderFactory, InvalidateOptions } from 'astro'
 import { BaseApp } from 'astro/app'
+import { PersistentCacheStore, type PersistentCacheOptions } from './cache-store.js'
 
 declare const __ASTRO_BUN_PRERENDER__: boolean | undefined
 
-/** Configuration for the process-local cache used by the Bun adapter. */
+/** Durable cache configuration. Persistence is deliberately opt-in. */
+export interface BunCachePersistenceOptions {
+  /** Directory that contains only this adapter's SQLite database. */
+  directory: string
+  /** Deployment/build identifier. Entries never cross this boundary. */
+  namespace: string
+  /** Total response-body bytes across all namespaces in this database. */
+  maxDiskBytes?: number
+  /** Maximum durable entries across all namespaces. @default maxEntries */
+  maxDiskEntries?: number
+  /** Load most-recent durable entries into the bounded process cache at startup. */
+  preFillMemory?: boolean
+}
+
+/** Configuration for the Bun ISR cache used by the adapter. */
 export interface BunCacheOptions {
   /** Maximum cached responses. @default 1_000 */
   maxEntries?: number
@@ -15,6 +30,10 @@ export interface BunCacheOptions {
   maxCacheBodyTimeMs?: number
   /** Maximum origin requests being coalesced or revalidated. @default 100 */
   maxInflight?: number
+  /** Optional SQLite disk tier shared by Bun processes. */
+  persistence?: BunCachePersistenceOptions
+  /** @internal Exact pathname of Astro's image endpoint, supplied by the adapter. */
+  imageEndpointRoute?: string
 }
 
 export type CacheOptions = BunCacheOptions
@@ -37,6 +56,38 @@ interface Flight {
   promise: Promise<FlightResult>
 }
 
+type InvalidateableCache = Pick<CacheProvider, 'invalidate'>
+// Astro can bundle the provider while leaving package subpath imports external.
+// Share the process-local registry across those module instances.
+const registryKey = Symbol.for('@nauverse/astro-bun/cache/providers/v1')
+const registryHost = globalThis as typeof globalThis & {
+  [registryKey]?: Set<WeakRef<InvalidateableCache>>
+}
+const activeCaches = (registryHost[registryKey] ??= new Set<WeakRef<InvalidateableCache>>())
+
+/** Expire a path in every live Bun cache provider in this process. */
+export async function expirePath(path: string): Promise<void> {
+  await invalidateLiveCaches({ path })
+}
+
+/** Expire all entries in every live Bun cache provider in this process. */
+export async function expireAll(): Promise<void> {
+  await invalidateLiveCaches({})
+}
+
+async function invalidateLiveCaches(input: InvalidateOptions): Promise<void> {
+  const invalidations: Promise<void>[] = []
+  for (const reference of activeCaches) {
+    const cache = reference.deref()
+    if (!cache) {
+      activeCaches.delete(reference)
+      continue
+    }
+    if (cache.invalidate) invalidations.push(cache.invalidate(input))
+  }
+  await Promise.all(invalidations)
+}
+
 const MiB = 1024 * 1024
 
 function cacheKey(request: Request): string {
@@ -51,15 +102,18 @@ function parseCacheControl(value: string | null): {
 } {
   if (!value) return { maxAge: 0, swr: 0, cacheable: false }
   let maxAge = 0
+  let sharedMaxAge: number | undefined
   let swr = 0
   let cacheable = true
   for (const directive of value.split(',')) {
     const part = directive.trim().toLowerCase()
     if (part === 'private' || part === 'no-store') cacheable = false
     else if (part.startsWith('max-age=')) maxAge = Number.parseInt(part.slice(8), 10) || 0
+    else if (part.startsWith('s-maxage=')) sharedMaxAge = Number.parseInt(part.slice(9), 10) || 0
     else if (part.startsWith('stale-while-revalidate='))
       swr = Number.parseInt(part.slice(23), 10) || 0
   }
+  maxAge = sharedMaxAge ?? maxAge
   return { maxAge, swr, cacheable: cacheable && maxAge > 0 }
 }
 function hasDisallowedCacheDirective(value: string | null): boolean {
@@ -98,6 +152,16 @@ function responseFrom(entry: Entry, cacheStatus: 'HIT' | 'MISS' | 'STALE'): Resp
   const headers = new Headers(entry.headers)
   headers.set('X-Astro-Cache', cacheStatus)
   return new Response(entry.body.slice(), { status: 200, headers })
+}
+
+function withCacheStatus(response: Response, status: 'BYPASS' | 'MISS'): Response {
+  try {
+    response.headers.set('X-Astro-Cache', status)
+  } catch {
+    // Some platform responses expose immutable headers. Preserve the original
+    // response rather than cloning or consuming its potentially streaming body.
+  }
+  return response
 }
 
 async function readBody(
@@ -167,12 +231,31 @@ function entryPath(key: string): string {
   return `${url.pathname}${url.search}`
 }
 
+function normalizePathname(pathname: string): string {
+  return new URL(pathname, 'http://astro-bun.invalid').pathname
+}
+
+function isConfiguredImageKey(key: string, imageEndpointRoute: string | undefined): boolean {
+  return imageEndpointRoute !== undefined && new URL(key).pathname === imageEndpointRoute
+}
+
+function normalizedImageKey(key: string): string {
+  const url = new URL(key)
+  const parameters = [...url.searchParams.entries()]
+    .map(([name, value], index) => ({ name, value, index }))
+    .sort((left, right) => left.name.localeCompare(right.name) || left.index - right.index)
+  const search = new URLSearchParams()
+  for (const { name, value } of parameters) search.append(name, value)
+  url.search = search.toString()
+  return url.toString()
+}
+
 /**
- * A bounded, process-local ISR cache for Bun deployments.
+ * A bounded Bun ISR cache with an optional durable SQLite tier.
  *
  * Entries are deliberately opt-in: Astro must have emitted CDN-Cache-Control
- * from `Astro.cache.set()` or configured cache routes. The cache is not shared
- * across Bun processes or deploys.
+ * from `Astro.cache.set()`, configured cache routes, or `s-maxage` response
+ * headers. Durable entries require an explicit deployment namespace.
  */
 const createBunCache: CacheProviderFactory<BunCacheOptions> = (options) => {
   const maxEntries = validLimit(options?.maxEntries, 1_000)
@@ -180,10 +263,31 @@ const createBunCache: CacheProviderFactory<BunCacheOptions> = (options) => {
   const maxBodyBytes = Math.min(maxBytes, validLimit(options?.maxBodyBytes, MiB))
   const maxCacheBodyTimeMs = validLimit(options?.maxCacheBodyTimeMs, 1_000)
   const maxInflight = validLimit(options?.maxInflight, 100)
+  const persistence = options?.persistence
+  const imageEndpointRoute = options?.imageEndpointRoute
+    ? normalizePathname(options.imageEndpointRoute)
+    : undefined
+  if (persistence && (!persistence.directory || !persistence.namespace))
+    throw new TypeError('Cache persistence requires a directory and deployment namespace')
+  const maxDiskBytes = persistence ? validLimit(persistence.maxDiskBytes, maxBytes) : undefined
+  const maxDiskEntries = persistence
+    ? validLimit(persistence.maxDiskEntries, maxEntries)
+    : undefined
+  const disk = persistence
+    ? new PersistentCacheStore({
+        directory: persistence.directory,
+        namespace: persistence.namespace,
+        maxDiskBytes: maxDiskBytes!,
+        maxDiskEntries: maxDiskEntries!,
+      } satisfies PersistentCacheOptions)
+    : undefined
   const entries = new Map<string, Entry>()
   const inflight = new Map<string, Flight>()
   let totalBytes = 0
   let generation = 0
+  let diskRevision: number | undefined
+  let diskAvailable = true
+  let warmed = false
 
   function get(key: string): Entry | undefined {
     const entry = entries.get(key)
@@ -213,16 +317,64 @@ const createBunCache: CacheProviderFactory<BunCacheOptions> = (options) => {
     totalBytes += entry.body.byteLength
   }
 
+  function clearMemory(): void {
+    entries.clear()
+    totalBytes = 0
+  }
+
+  async function synchronizeDisk(): Promise<void> {
+    if (!disk) return
+    const revision = await disk.revision()
+    if (revision === undefined) {
+      clearMemory()
+      generation++
+      diskRevision = undefined
+      diskAvailable = false
+      return
+    }
+    diskAvailable = true
+    if (diskRevision !== undefined && diskRevision !== revision) {
+      clearMemory()
+      generation++
+    }
+    diskRevision = revision
+    if (persistence?.preFillMemory && !warmed) {
+      warmed = true
+      const warmEntries = await disk.warm(maxEntries, maxBytes)
+      for (const [key, entry] of warmEntries) store(key, entry, generation)
+    }
+  }
+
+  async function getCached(key: string): Promise<Entry | undefined> {
+    await synchronizeDisk()
+    const memory = get(key)
+    if (memory || !disk) return memory
+    const fromDisk = await disk.get(key)
+    if (!fromDisk) return undefined
+    store(key, fromDisk, generation)
+    return get(key)
+  }
+
   async function cacheResponse(
     response: Response,
     key: string,
     createdAtGeneration: number,
+    createdAtDiskRevision: number | undefined,
   ): Promise<Entry | undefined> {
-    const directives = parseCacheControl(response.headers.get('cdn-cache-control'))
+    const cdnCacheControl = response.headers.get('cdn-cache-control')
+    const cacheControl = response.headers.get('cache-control')
+    const isImageResponse = isConfiguredImageKey(key, imageEndpointRoute)
+    // Astro emits CDN-Cache-Control. A shared s-maxage response is also an
+    // explicit standard opt-in when Astro's cache API is not used.
+    const directives = parseCacheControl(cdnCacheControl)
+    const cacheControlDirectives = parseCacheControl(cacheControl)
+    if (!cdnCacheControl && !isImageResponse && !/(?:^|,)\s*s-maxage\s*=/i.test(cacheControl ?? ''))
+      return undefined
+    const policy = cdnCacheControl ? directives : cacheControlDirectives
     if (
-      !directives.cacheable ||
-      hasDisallowedCacheDirective(response.headers.get('cdn-cache-control')) ||
-      hasDisallowedCacheDirective(response.headers.get('cache-control')) ||
+      !policy.cacheable ||
+      hasDisallowedCacheDirective(cdnCacheControl) ||
+      hasDisallowedCacheDirective(cacheControl) ||
       response.status !== 200 ||
       response.headers.has('set-cookie') ||
       hasDeferredCookies(response) ||
@@ -237,16 +389,31 @@ const createBunCache: CacheProviderFactory<BunCacheOptions> = (options) => {
     response.headers.forEach((value, name) => {
       headers.push([name, value])
     })
+    if (isImageResponse && !cdnCacheControl) {
+      const cacheControlIndex = headers.findIndex(([name]) => name === 'cache-control')
+      if (cacheControlIndex >= 0) {
+        const [name, value] = headers[cacheControlIndex]
+        headers[cacheControlIndex] = [
+          name,
+          /(?:^|,)\s*s-maxage\s*=/i.test(value) ? value : `${value}, s-maxage=${policy.maxAge}`,
+        ]
+      }
+    }
     const entry: Entry = {
       body,
       headers,
       storedAt: Date.now(),
-      maxAge: directives.maxAge,
-      swr: directives.swr,
+      maxAge: policy.maxAge,
+      swr: policy.swr,
       tags: (response.headers.get('cache-tag') ?? '')
         .split(',')
         .map((tag) => tag.trim())
         .filter(Boolean),
+    }
+    if (disk && createdAtDiskRevision !== undefined) {
+      const revision = await disk.set(key, entry, createdAtDiskRevision)
+      if (revision === undefined) return undefined
+      diskRevision = revision
     }
     store(key, entry, createdAtGeneration)
     return generation === createdAtGeneration ? entry : undefined
@@ -267,17 +434,23 @@ const createBunCache: CacheProviderFactory<BunCacheOptions> = (options) => {
     replacingStale = false,
   ): Flight {
     const createdAtGeneration = generation
+    const createdAtDiskRevision = diskRevision
     const flight = (async (): Promise<FlightResult> => {
       const response = await next()
       try {
-        const entry = await cacheResponse(response, key, createdAtGeneration)
+        const entry = await cacheResponse(response, key, createdAtGeneration, createdAtDiskRevision)
         if (
           !entry &&
           replacingStale &&
           response.status === 200 &&
           createdAtGeneration === generation
-        )
+        ) {
           remove(key)
+          if (disk && createdAtDiskRevision !== undefined) {
+            const revision = await disk.delete(key, createdAtDiskRevision)
+            if (revision !== undefined) diskRevision = revision
+          }
+        }
         return { response, entry }
       } catch (error) {
         context.logger.warn(
@@ -313,13 +486,21 @@ const createBunCache: CacheProviderFactory<BunCacheOptions> = (options) => {
     context.waitUntil?.(handled)
   }
 
-  return {
+  const provider: CacheProvider = {
     name: 'bun',
     async onRequest(context, next) {
-      if (typeof __ASTRO_BUN_PRERENDER__ !== 'undefined' && __ASTRO_BUN_PRERENDER__) return next()
-      if (!canRead(context.request)) return next()
-      const key = cacheKey(context.request)
-      const cached = get(key)
+      if (typeof __ASTRO_BUN_PRERENDER__ !== 'undefined' && __ASTRO_BUN_PRERENDER__)
+        return withCacheStatus(await next(), 'BYPASS')
+      if (!canRead(context.request)) return withCacheStatus(await next(), 'BYPASS')
+      const rawKey = cacheKey(context.request)
+      const key = isConfiguredImageKey(rawKey, imageEndpointRoute)
+        ? normalizedImageKey(rawKey)
+        : rawKey
+      // Keep the process-local path synchronous through flight creation. Apart
+      // from avoiding needless microtasks, this preserves invalidation's
+      // generation barrier for an origin request that has already started.
+      const cached = disk ? await getCached(key) : get(key)
+      if (disk && !diskAvailable) return withCacheStatus(await next(), 'BYPASS')
       if (cached && isFresh(cached)) return responseFrom(cached, 'HIT')
       if (cached && isStale(cached)) {
         revalidate(context, next, key)
@@ -332,16 +513,26 @@ const createBunCache: CacheProviderFactory<BunCacheOptions> = (options) => {
       const flight =
         currentFlight ??
         (inflight.size < maxInflight ? createFlight(context, next, key) : undefined)
-      if (!flight) return next()
+      if (!flight) return withCacheStatus(await next(), 'BYPASS')
       const result = await flight.promise
       if (result.entry) return responseFrom(result.entry, 'MISS')
-      return currentFlight ? next() : result.response
+      return currentFlight
+        ? withCacheStatus(await next(), 'BYPASS')
+        : withCacheStatus(result.response, 'BYPASS')
     },
     async invalidate(input: InvalidateOptions) {
       generation++
       const tags = input.tags
         ? new Set(Array.isArray(input.tags) ? input.tags : [input.tags])
         : undefined
+      if (disk) {
+        const revision = await disk.invalidate(input.path, tags ? [...tags] : undefined)
+        if (revision !== undefined) diskRevision = revision
+      }
+      if (!input.path && !tags) {
+        clearMemory()
+        return
+      }
       for (const [key, entry] of entries) {
         if (
           (input.path && entryPath(key) === input.path) ||
@@ -351,6 +542,8 @@ const createBunCache: CacheProviderFactory<BunCacheOptions> = (options) => {
       }
     },
   }
+  activeCaches.add(new WeakRef(provider))
+  return provider
 }
 
 export default createBunCache

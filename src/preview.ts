@@ -22,7 +22,9 @@ export default async function preview(params: PreviewServerParams) {
       ) {
         return new Response('Forbidden', { status: 403 })
       }
-      const response = await handler(request, server)
+      // Preview remains a local development surface: it does not inherit
+      // production proxy trust from the standalone server configuration.
+      const response = await handler(request, server, null)
       for (const [key, value] of Object.entries(params.headers ?? {})) {
         if (value !== undefined)
           response.headers.set(key, Array.isArray(value) ? value.join(', ') : String(value))

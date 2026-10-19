@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import createBunCache from '../src/cache.js'
+import createBunCache, { expireAll, expirePath } from '../src/cache.js'
 
 const logger = { info() {}, warn() {}, error() {} }
 
@@ -44,6 +44,43 @@ describe('Bun ISR cache provider', () => {
       'render-2',
     )
     expect(renders).toBe(2)
+  })
+
+  test('caches only the exact configured Astro image endpoint with its max-age policy', async () => {
+    const provider = createBunCache({ imageEndpointRoute: '_image' })
+    let renders = 0
+    const image = request('https://example.test/_image?href=%2Fphoto.png&w=640&custom=one')
+    const next = async () =>
+      new Response(`image-${++renders}`, { headers: { 'Cache-Control': 'public, max-age=60' } })
+    expect(await (await run(provider, image, next)).text()).toBe('image-1')
+    const cached = await run(provider, image, next)
+    expect(await cached.text()).toBe('image-1')
+    expect(cached.headers.get('cache-control')).toBe('public, max-age=60, s-maxage=60')
+    expect(renders).toBe(1)
+
+    const reordered = request('https://example.test/_image?w=640&custom=one&href=%2Fphoto.png')
+    expect(await (await run(provider, reordered, next)).text()).toBe('image-1')
+    expect(renders).toBe(1)
+
+    const customVariant = request('https://example.test/_image?href=%2Fphoto.png&w=640&custom=two')
+    expect(await (await run(provider, customVariant, next)).text()).toBe('image-2')
+    expect(renders).toBe(2)
+
+    const lookalike = request('https://example.test/_image/other?href=%2Fphoto.png')
+    await run(provider, lookalike, next)
+    await run(provider, lookalike, next)
+    expect(renders).toBe(4)
+  })
+
+  test('never treats an ordinary browser max-age response as ISR cacheable', async () => {
+    const provider = createBunCache({ imageEndpointRoute: '_image' })
+    let renders = 0
+    const next = async () =>
+      new Response(`page-${++renders}`, { headers: { 'Cache-Control': 'public, max-age=60' } })
+    await run(provider, request('https://example.test/page'), next)
+    expect(await (await run(provider, request('https://example.test/page'), next)).text()).toBe(
+      'page-2',
+    )
   })
 
   test('serves stale during SWR and coalesces concurrent revalidation through waitUntil', async () => {
@@ -326,5 +363,17 @@ describe('Bun ISR cache provider', () => {
     } finally {
       Date.now = originalNow
     }
+  })
+
+  test('expires live providers through the public helpers', async () => {
+    const provider = createBunCache()
+    let renders = 0
+    const next = async () => cacheable(`render-${++renders}`)
+    const helpers = request('https://example.test/helpers')
+    await run(provider, helpers, next)
+    await expirePath('/helpers')
+    expect(await (await run(provider, helpers, next)).text()).toBe('render-2')
+    await expireAll()
+    expect(await (await run(provider, helpers, next)).text()).toBe('render-3')
   })
 })

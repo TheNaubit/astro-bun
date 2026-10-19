@@ -13,8 +13,13 @@ concurrency:
 
 jobs:
   test:
-    name: Bun 1.4.3
-    runs-on: ubuntu-24.04
+    name: Bun 1.4.3 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
