@@ -1,4 +1,6 @@
 import config from 'virtual:astro-bun-config'
+import websocketEndpoint from 'virtual:astro-bun-websocket'
+import { handleWebSocketUpgrade } from './websocket.js'
 import { createApp } from 'astro/app/entrypoint'
 import { setGetEnv } from 'astro/env/setup'
 import {
@@ -9,6 +11,17 @@ import {
   type ServerOptions,
 } from './runtime-options.js'
 import { type AssetManifest, createStaticHandler } from './static.js'
+
+if (
+  config.websocket &&
+  (!websocketEndpoint ||
+    typeof websocketEndpoint.upgrade !== 'function' ||
+    !websocketEndpoint.websocket ||
+    typeof websocketEndpoint.websocket.message !== 'function')
+)
+  throw new Error(
+    'WebSocket module must export an upgrade function and a websocket message handler',
+  )
 
 setGetEnv((key) => Bun.env[key])
 const app = createApp()
@@ -27,8 +40,9 @@ function waitUntil(promise: Promise<unknown>) {
 
 export async function handler(
   request: Request,
-  server?: Bun.Server<undefined>,
+  server?: Pick<Bun.Server<object>, 'requestIP' | 'timeout'>,
   trustedProxies?: typeof defaultTrustedProxies | null,
+  sseIdleTimeout: number | false = config.server.sseIdleTimeout ?? 0,
 ): Promise<Response> {
   const staticResponse = serveStatic(request)
   if (staticResponse) return staticResponse
@@ -45,6 +59,16 @@ export async function handler(
     prerenderedErrorPageFetch: async (path) =>
       serveStatic(new Request(new URL(path, request.url))) ?? new Response(null, { status: 404 }),
   })
+  if (
+    server &&
+    sseIdleTimeout !== false &&
+    request.method !== 'HEAD' &&
+    response.status === 200 &&
+    response.body &&
+    response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() ===
+      'text/event-stream'
+  )
+    server.timeout(request, sseIdleTimeout)
   if (request.method === 'HEAD') {
     void response.body?.cancel().catch(() => {})
     return new Response(null, {
@@ -56,36 +80,49 @@ export async function handler(
   return response
 }
 
+export const websocket = websocketEndpoint?.websocket
+
+export async function upgrade(request: Request, server: Pick<Bun.Server<object>, 'upgrade'>) {
+  if (!websocketEndpoint || !config.websocket) return false as const
+  return handleWebSocketUpgrade(request, server, websocketEndpoint, config.websocket)
+}
+
 export function start(options: ServerOptions = {}) {
   const runtime = resolveServerOptions(config.server, options)
   const trustedProxies = createTrustedProxyList(runtime.trustedProxies)
   const common = {
     development: false,
     maxRequestBodySize: config.maxRequestBodySize,
-    fetch(request: Request, server: Bun.Server<undefined>) {
-      return handler(request, server, trustedProxies ?? null)
-    },
     error() {
       app.adapterLogger.error('Request failed')
       return new Response('Internal Server Error', { status: 500 })
     },
   }
   const tls = toBunTLS(runtime.tls, runtime.lowMemoryMode)
-  if (runtime.unix) {
-    return Bun.serve({
-      ...common,
-      unix: runtime.unix,
-      ...(tls ? { tls } : {}),
+  const settings = runtime.unix
+    ? { ...common, unix: runtime.unix, ...(tls ? { tls } : {}) }
+    : {
+        ...common,
+        hostname: runtime.hostname!,
+        port: runtime.port!,
+        ...(runtime.idleTimeout === undefined ? {} : { idleTimeout: runtime.idleTimeout }),
+        ...(runtime.reusePort === undefined ? {} : { reusePort: runtime.reusePort }),
+        ...(runtime.http2 === undefined ? {} : { http2: runtime.http2 }),
+        ...(tls ? { tls } : {}),
+      }
+  const fetchHTTP = (request: Request, server: Bun.Server<object>) =>
+    handler(request, server, trustedProxies ?? null, runtime.sseIdleTimeout ?? 0)
+  if (websocket) {
+    return Bun.serve<object>({
+      ...settings,
+      websocket,
+      async fetch(request, server) {
+        const upgraded = await upgrade(request, server)
+        return upgraded === false ? fetchHTTP(request, server) : upgraded
+      },
     })
   }
-  return Bun.serve({
-    ...common,
-    hostname: runtime.hostname!,
-    port: runtime.port!,
-    ...(runtime.idleTimeout === undefined ? {} : { idleTimeout: runtime.idleTimeout }),
-    ...(runtime.reusePort === undefined ? {} : { reusePort: runtime.reusePort }),
-    ...(tls ? { tls } : {}),
-  })
+  return Bun.serve<object>({ ...settings, fetch: fetchHTTP })
 }
 
 if (config.mode === 'standalone' && import.meta.main) {

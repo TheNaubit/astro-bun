@@ -11,6 +11,16 @@ export interface ServerOptions {
   unix?: string
   /** Seconds to retain an inactive TCP connection. `0` disables the timeout. */
   idleTimeout?: number
+  /**
+   * Experimental native HTTP/2. Bun uses ALPN with TLS and HTTP/2 prior
+   * knowledge without TLS. Unix sockets do not support this Bun option.
+   */
+  http2?: boolean
+  /**
+   * Maximum seconds an SSE stream may remain idle. `false` or `0` disables
+   * the adapter-level timeout; Bun has no SSE-specific server option.
+   */
+  sseIdleTimeout?: number | false
   reusePort?: boolean
   /** Passed to Bun's TLS implementation when TLS is enabled. */
   lowMemoryMode?: boolean
@@ -44,6 +54,12 @@ function assertPath(name: string, value: unknown) {
   if (!isNonEmptyString(value)) throw new Error(`${name} must be a non-empty path`)
 }
 
+function assertTimeout(name: string, value: unknown, allowFalse = false) {
+  if (value === undefined || (allowFalse && value === false)) return
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 255)
+    throw new Error(`${name} must be a safe integer from 0 to 255${allowFalse ? ' or false' : ''}`)
+}
+
 function parseTrustedProxy(value: string): {
   address: string
   prefix?: number
@@ -74,12 +90,10 @@ export function validateServerOptions(options: ServerOptions | undefined): void 
   )
     throw new Error('server.port must be an integer from 0 to 65535')
   if (options.unix !== undefined) assertPath('server.unix', options.unix)
-  if (
-    options.idleTimeout !== undefined &&
-    (!Number.isFinite(options.idleTimeout) || options.idleTimeout < 0)
-  )
-    throw new Error('server.idleTimeout must be a non-negative number of seconds')
+  assertTimeout('server.idleTimeout', options.idleTimeout)
+  assertTimeout('server.sseIdleTimeout', options.sseIdleTimeout, true)
   assertBoolean('server.reusePort', options.reusePort)
+  assertBoolean('server.http2', options.http2)
   assertBoolean('server.lowMemoryMode', options.lowMemoryMode)
 
   if (options.tls) {
@@ -100,9 +114,10 @@ export function validateServerOptions(options: ServerOptions | undefined): void 
     options.unix &&
     (options.hostname !== undefined ||
       options.port !== undefined ||
-      options.reusePort !== undefined)
+      options.reusePort !== undefined ||
+      options.http2 === true)
   )
-    throw new Error('server.unix cannot be combined with hostname, port, or reusePort')
+    throw new Error('server.unix cannot be combined with hostname, port, reusePort, or http2')
 }
 
 /** Build an address matcher after validation, without accepting wildcard proxy trust. */
@@ -158,7 +173,8 @@ export function resolveServerOptions(
   const hasTCPOverride =
     overrides?.hostname !== undefined ||
     overrides?.port !== undefined ||
-    overrides?.reusePort !== undefined
+    overrides?.reusePort !== undefined ||
+    overrides?.http2 === true
   if (Object.hasOwn(environment, 'UNIX') && !isNonEmptyString(environment.UNIX))
     throw new Error('UNIX must be a non-empty socket path')
   const unix = hasTCPOverride
@@ -176,10 +192,12 @@ export function resolveServerOptions(
     throw new Error('TLS_CERT_PATH and TLS_KEY_PATH must be configured together')
   const tls = certPath && keyPath ? { ...configuredTLS, certPath, keyPath } : undefined
   if (unix) {
+    if (options.http2) throw new Error('server.http2 requires TCP, not a Unix socket')
     return {
       unix,
       tls,
       ...(options.idleTimeout === undefined ? {} : { idleTimeout: options.idleTimeout }),
+      ...(options.sseIdleTimeout === undefined ? {} : { sseIdleTimeout: options.sseIdleTimeout }),
       lowMemoryMode: options.lowMemoryMode,
       trustedProxies: options.trustedProxies,
     }

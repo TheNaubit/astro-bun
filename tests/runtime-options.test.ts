@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { connect } from 'node:http2'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -68,6 +69,16 @@ test('server options reject unsafe proxy and listen combinations', () => {
   expect(() => validateServerOptions({ tls: { certPath: '', keyPath: 'key.pem' } })).toThrow(
     'non-empty',
   )
+  expect(() => validateServerOptions({ idleTimeout: 1.5 })).toThrow('safe integer')
+  expect(() => validateServerOptions({ idleTimeout: 256 })).toThrow('0 to 255')
+  expect(() => validateServerOptions({ sseIdleTimeout: -1 })).toThrow('0 to 255')
+  expect(() => validateServerOptions({ sseIdleTimeout: 1.5 })).toThrow('safe integer')
+  expect(() => validateServerOptions({ sseIdleTimeout: 'never' as never })).toThrow('0 to 255')
+  expect(() => validateServerOptions({ http2: 'yes' as never })).toThrow('boolean')
+  expect(() => validateServerOptions({ unix: '/tmp/app.sock', http2: true })).toThrow(
+    'cannot be combined',
+  )
+  expect(() => validateServerOptions({ sseIdleTimeout: false, http2: true })).not.toThrow()
 })
 
 test('server defaults, native TLS files, and explicit Unix sockets resolve safely', () => {
@@ -96,10 +107,54 @@ test('server defaults, native TLS files, and explicit Unix sockets resolve safel
   ).toEqual({
     unix: '/tmp/astro-bun.sock',
   })
+  expect(
+    resolveServerOptions({ unix: '/tmp/astro-bun.sock', sseIdleTimeout: false }, undefined, {}),
+  ).toEqual({ unix: '/tmp/astro-bun.sock', sseIdleTimeout: false })
+  expect(resolveServerOptions({ http2: true, sseIdleTimeout: 30 }, undefined, {})).toMatchObject({
+    http2: true,
+    sseIdleTimeout: 30,
+  })
   const tls = toBunTLS({ certPath: 'cert.pem', keyPath: 'key.pem', caPath: 'ca.pem' }, true)
   expect(tls).toMatchObject({ lowMemoryMode: true })
   expect(tls?.cert).toBeInstanceOf(Bun.file('cert.pem').constructor)
 })
+
+test('Bun serves opt-in HTTP/2 prior-knowledge connections', async () => {
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    http2: true,
+    fetch() {
+      return new Response('http2-ok')
+    },
+  })
+  try {
+    const body = await new Promise<string>((resolve, reject) => {
+      const client = connect(`http://127.0.0.1:${server.port}`)
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (result: string | Error) => {
+        if (timer) clearTimeout(timer)
+        client.close()
+        if (result instanceof Error) reject(result)
+        else resolve(result)
+      }
+      timer = setTimeout(() => finish(new Error('HTTP/2 request timed out')), 5_000)
+      const request = client.request({ ':path': '/' })
+      let received = ''
+      request.setEncoding('utf8')
+      request.on('data', (chunk: string) => {
+        received += chunk
+      })
+      request.once('end', () => finish(received))
+      request.once('error', finish)
+      client.once('error', finish)
+      request.end()
+    })
+    expect(body).toBe('http2-ok')
+  } finally {
+    await server.stop(true)
+  }
+}, 10_000)
 
 test('runtime TLS environment values must be complete', () => {
   expect(() => resolveServerOptions(undefined, undefined, { TLS_CERT_PATH: 'cert.pem' })).toThrow(
@@ -238,4 +293,10 @@ test('does not mix a partial TLS environment override with a configured key', ()
       { TLS_CERT_PATH: 'other.crt' },
     ),
   ).toThrow('configured together')
+})
+
+test('HTTP/2 cannot be silently discarded by a runtime Unix override', () => {
+  expect(() =>
+    resolveServerOptions({ http2: true }, undefined, { UNIX: '/tmp/fixture.sock' }),
+  ).toThrow('requires TCP')
 })

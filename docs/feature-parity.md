@@ -144,3 +144,23 @@ Legacy API names are represented by supported Astro 7/Bun equivalents; unsafe
 stack disclosure is deliberately excluded. Tests establish behavior in the
 covered scenarios, not an assurance that all possible bugs have been eliminated.
 Maintain these fixtures as Astro and Bun evolve.
+
+## Additional native Bun capabilities
+
+These additions extend the adapter beyond the comparison above:
+
+- **SSE timeout control:** successful event streams use Bun's per-request
+  timeout API. Tests cover quiet periods, explicit limits, opt-out, ordinary
+  stream timeouts, cache bypass, and cancellation on client disconnect.
+- **Native WebSocket endpoint:** an explicit bundled module supplies an async
+  authorization hook and Bun handlers. Tests cover text/binary frames, origin
+  checks, denied upgrades, base paths, production preview, and missing handlers.
+  Upgrades run outside Astro middleware, so authorization belongs in the hook.
+- **Opt-in HTTP/2:** Bun's experimental TCP server option supports cleartext
+  prior knowledge and TLS ALPN while retaining HTTP/1.1. Both are exercised
+  against a built Astro application. WebSocket upgrades remain HTTP/1.1.
+
+See [the real-time guide](../README.md#real-time),
+[`tests/integration.test.ts`](../tests/integration.test.ts),
+[`tests/websocket.test.ts`](../tests/websocket.test.ts), and
+[`tests/modes.test.ts`](../tests/modes.test.ts).

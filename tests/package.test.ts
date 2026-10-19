@@ -35,6 +35,7 @@ beforeAll(async () => {
   expect(listing).toContain('package/README.md')
   expect(listing).toContain('package/dist/index.js')
   expect(listing).toContain('package/dist/cache.js')
+  expect(listing).toContain('package/dist/websocket.d.ts')
   expect(listing).not.toContain('package/src/')
   expect(listing).not.toContain('package/tests/')
   await command(['tar', '-xzf', archive], consumer)
@@ -42,6 +43,14 @@ beforeAll(async () => {
   // Keep the consumer isolated: only its Astro dependency points at the local
   // development dependency tree, while the packed adapter is extracted above.
   await symlink(join(root, 'node_modules/astro'), join(consumer, 'node_modules/astro'), 'dir')
+  await command(
+    [
+      'bun',
+      '-e',
+      "import { handleWebSocketUpgrade } from '@nauverse/astro-bun/websocket'; if (typeof handleWebSocketUpgrade !== 'function') throw new Error('Missing WebSocket export')",
+    ],
+    consumer,
+  )
   await Bun.write(
     join(consumer, 'astro.config.mjs'),
     `import { defineConfig } from 'astro/config'\nimport bun from '@nauverse/astro-bun'\nexport default defineConfig({ output: 'server', adapter: bun(), routeRules: { '/counter': { maxAge: 60 } } })\n`,

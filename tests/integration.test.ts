@@ -178,7 +178,7 @@ test('built server applies proxy trust without accepting direct-client spoofing'
   }
 })
 
-test('built server serves HTTPS with explicit certificate files', async () => {
+test('built server serves HTTPS and HTTP/2 ALPN with explicit certificate files', async () => {
   const certPath = join(relocated, 'test-cert.pem')
   const keyPath = join(relocated, 'test-key.pem')
   const generate = Bun.spawn(
@@ -201,11 +201,113 @@ test('built server serves HTTPS with explicit certificate files', async () => {
     { stdout: 'ignore', stderr: 'ignore' },
   )
   expect(await generate.exited).toBe(0)
-  const tls = startServer({ hostname: '127.0.0.1', port: 0, tls: { certPath, keyPath } })
+  const tls = startServer({
+    hostname: '127.0.0.1',
+    port: 0,
+    http2: true,
+    tls: { certPath, keyPath },
+  })
+  const { connect } = await import('node:http2')
+  const client = connect(tls.url.origin, { rejectUnauthorized: false })
   try {
     const response = await fetch(tls.url, { tls: { rejectUnauthorized: false } })
     expect(await response.text()).toContain('Static home')
+    const body = await new Promise<string>((resolve, reject) => {
+      const stream = client.request({ ':path': '/' })
+      let content = ''
+      stream.setEncoding('utf8')
+      stream.setTimeout(5_000, () => stream.destroy(new Error('HTTP/2 TLS request timed out')))
+      stream.on('data', (chunk) => {
+        content += chunk
+      })
+      stream.on('end', () => resolve(content))
+      stream.on('error', reject)
+      stream.end()
+    })
+    expect(body).toContain('Static home')
+    expect(client.alpnProtocol).toBe('h2')
   } finally {
+    client.destroy()
     await tls.stop(true)
+  }
+})
+
+test('SSE survives quiet periods beyond the ordinary request idle timeout', async () => {
+  const streaming = startServer({ hostname: '127.0.0.1', port: 0, idleTimeout: 1 })
+  try {
+    const response = await fetch(streaming.url + 'api/events', {
+      signal: AbortSignal.timeout(12_000),
+    })
+    expect(response.headers.get('x-astro-cache')).toBe('BYPASS')
+    expect(await response.text()).toBe('data: first\n\ndata: second\n\n')
+  } finally {
+    await streaming.stop(true)
+  }
+}, 15_000)
+
+test('SSE timeout overrides preserve ordinary stream limits and allow opt-out', async () => {
+  await Promise.all(
+    [
+      { sseIdleTimeout: false as const, path: 'api/events' },
+      { sseIdleTimeout: 1, path: 'api/events' },
+      { sseIdleTimeout: 0, path: 'api/events?plain' },
+    ].map(async ({ sseIdleTimeout, path }) => {
+      const streaming = startServer({
+        hostname: '127.0.0.1',
+        port: 0,
+        idleTimeout: 1,
+        sseIdleTimeout,
+      })
+      try {
+        const response = await fetch(streaming.url + path, { signal: AbortSignal.timeout(12_000) })
+        await expect(response.text()).rejects.toThrow()
+      } finally {
+        await streaming.stop(true)
+      }
+    }),
+  )
+}, 15_000)
+
+test('SSE releases the endpoint stream when the client disconnects', async () => {
+  const before = (await (await get('/api/events?stats')).json()) as { cancellations: number }
+  const controller = new AbortController()
+  const response = await get('/api/events', { signal: controller.signal })
+  const reader = response.body!.getReader()
+  expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: first\n\n')
+  controller.abort()
+  await expect(reader.read()).rejects.toThrow()
+  let cancellations = before.cancellations
+  for (let attempt = 0; attempt < 40 && cancellations === before.cancellations; attempt++) {
+    await Bun.sleep(25)
+    cancellations = ((await (await get('/api/events?stats')).json()) as { cancellations: number })
+      .cancellations
+  }
+  expect(cancellations).toBeGreaterThan(before.cancellations)
+})
+
+test('built server serves static and SSR routes through native HTTP/2', async () => {
+  const { connect } = await import('node:http2')
+  const h2 = startServer({ hostname: '127.0.0.1', port: 0, http2: true })
+  const client = connect(h2.url.origin)
+  try {
+    const request = (path: string) =>
+      new Promise<string>((resolve, reject) => {
+        const stream = client.request({ ':path': path })
+        let text = ''
+        stream.setEncoding('utf8')
+        stream.setTimeout(5_000, () => stream.destroy(new Error('HTTP/2 request timed out')))
+        stream.on('data', (chunk) => {
+          text += chunk
+        })
+        stream.on('end', () => resolve(text))
+        stream.on('error', reject)
+        stream.end()
+      })
+    expect(await request('/')).toContain('Static home')
+    expect(await request('/ssr')).not.toBe(await request('/ssr'))
+    expect(await (await fetch(h2.url)).text()).toContain('Static home')
+  } finally {
+    client.destroy()
+    await h2.stop(true)
   }
 })
