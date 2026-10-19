@@ -52,17 +52,22 @@ bun link @nauverse/astro-bun
 
 ## Configuration
 
-Configure the adapter with Astro's standard server output:
+Start with Astro's default static output and opt individual pages into SSR as needed:
 
 ```ts
 import { defineConfig } from 'astro/config'
 import bun from '@nauverse/astro-bun'
 
 export default defineConfig({
-  output: 'server',
+  output: 'static',
   adapter: bun(),
 })
 ```
+
+Pages are generated at build time by default. Add `export const prerender = false`
+to pages that need SSR (see [the example below](#static-site-with-selected-ssr-pages)).
+If most routes need SSR, choose `output: 'server'` instead and opt static pages
+into prerendering with `export const prerender = true`.
 
 `bun()` starts in standalone mode. It emits a Bun server entrypoint that listens
 only when executed directly. `bun({ mode: 'handler' })` emits the same
@@ -191,21 +196,24 @@ used only when the direct peer is explicitly trusted as described above.
 
 ## ISR
 
-ISR is opt-in. Set cache policy in a route or page with Astro's cache API:
+ISR applies to on-demand routes. With static output, opt the page into SSR
+and set its cache policy with Astro's cache API:
 
 ```astro
 ---
+export const prerender = false;
 Astro.cache.set({ maxAge: 60, swr: 300, tags: ["posts"] });
 ---
 
 <h1>Posts</h1>
 ```
 
-You can configure the equivalent policy with Astro route rules:
+You can configure the equivalent policy with Astro route rules. With static
+output, the matching pages must still export `prerender = false`:
 
 ```ts
 export default defineConfig({
-  output: 'server',
+  output: 'static',
   adapter: bun(),
   routeRules: { '/blog/[...slug]': { maxAge: 60, swr: 300, tags: ['posts'] } },
 })
