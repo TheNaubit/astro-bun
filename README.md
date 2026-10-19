@@ -27,6 +27,7 @@
   <a href="#configuration">Quick start</a> ·
   <a href="#rendering">Rendering</a> ·
   <a href="#isr">ISR</a> ·
+  <a href="#real-time">Real-time</a> ·
   <a href="#deployment">Deploy</a> ·
   <a href="#development">Development</a>
 </p>
@@ -35,7 +36,7 @@
 
 - **Choose how each page renders.** Prerender your site and opt individual pages into SSR, or use server output for an application rendered mostly on demand.
 - **Cache when you choose.** Opt into ISR with fresh and stale windows, invalidation, and optional SQLite persistence across restarts.
-- **Use Bun directly.** Native file serving, Brotli/gzip compression, TLS, Unix sockets, and supervised Linux workers.
+- **Use Bun directly.** Native file serving, Brotli/gzip compression, SSE, WebSockets, TLS, Unix sockets, and supervised Linux workers.
 - **Deploy a tested build.** Linux and macOS CI exercise real Astro builds, packed-package consumption, and concurrent requests.
 
 > [!NOTE]
@@ -164,6 +165,10 @@ adapter: bun({
     hostname: 'localhost',
     port: 4321,
     idleTimeout: 10,
+    // SSE: 0 disables the stream idle timeout; false inherits idleTimeout.
+    sseIdleTimeout: 0,
+    // Experimental Bun API; TCP only. Disabled unless explicitly enabled.
+    http2: false,
     reusePort: false,
     lowMemoryMode: false,
 
@@ -360,6 +365,128 @@ The provider bypasses storage for credentialed requests and responses that are
 private, uncacheable, vary unsafely, or set cookies. Protect any invalidation
 endpoint with application authentication and authorization; the adapter does
 not add one.
+
+## Real-time
+
+### Server-Sent Events
+
+Return a standard SSE response from an Astro endpoint. With static output,
+export `prerender = false` so the endpoint runs on demand:
+
+```ts
+// src/pages/api/events.ts
+import type { APIRoute } from 'astro'
+
+export const prerender = false
+
+export const GET: APIRoute = () => {
+  let timer: ReturnType<typeof setInterval>
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream({
+    start(controller) {
+      const send = () => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ time: Date.now() })}\n\n`))
+      }
+      send()
+      timer = setInterval(send, 15_000)
+    },
+    cancel() {
+      clearInterval(timer)
+    },
+  })
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-store',
+    },
+  })
+}
+```
+
+Listen in the browser with `const events = new EventSource('/api/events')` and close it with
+`events.close()` when the UI no longer needs the stream. Include your Astro
+`base` in the URL if configured.
+
+The adapter uses [Bun's per-request timeout API](https://bun.sh/docs/runtime/http/server#server-timeout-request-seconds)
+for successful SSE responses. `server.sseIdleTimeout` defaults to `0`, which
+keeps quiet streams connected; set an integer from `1` to `255` for a bounded
+idle period, or `false` to inherit the ordinary server timeout. Non-SSE
+responses keep their normal timeout. SSE is never stored in the ISR cache.
+
+This applies after the endpoint returns its response; time spent preparing
+that response still uses the ordinary timeout. Reverse proxies have their own
+buffering and timeout settings. In an embedded HTTP handler, pass the owning
+Bun server as `handler(request, server)` to enable the timeout adjustment.
+
+### WebSockets
+
+Configure one explicit native WebSocket endpoint. Its module is bundled with
+the built server, so deployment does not depend on your source directory:
+
+```ts
+adapter: bun({
+  websocket: {
+    entrypoint: new URL('./src/socket.ts', import.meta.url),
+    path: '/live',
+  },
+})
+```
+
+Use your application's session verifier in the required upgrade hook. This
+example assumes `getSession(request)` validates the session and returns its user:
+
+```ts
+// src/socket.ts
+import type { WebSocketEndpoint } from '@nauverse/astro-bun/websocket'
+import { getSession } from './auth'
+
+type Connection = { userId: string }
+
+export default {
+  async upgrade(request) {
+    const session = await getSession(request)
+    if (!session) return new Response('Unauthorized', { status: 401 })
+    return { data: { userId: session.user.id } }
+  },
+  websocket: {
+    maxPayloadLength: 64 * 1024,
+    message(socket, message) {
+      socket.send(message)
+    },
+  },
+} satisfies WebSocketEndpoint<Connection>
+```
+
+The module supplies Bun's native handlers and options, including binary
+messages, backpressure, ping/pong, payload limits, and publish/subscribe.
+The upgrade result can also include `headers` for handshake headers or an
+explicitly selected subprotocol.
+
+- The configured path is relative to Astro's `base` and reserved for upgrades.
+  Ordinary requests to it receive `426`; other routes remain with Astro.
+- Browser connections are same-origin by default. Set `allowedOrigins` to an
+  array of exact HTTP/HTTPS origins to replace that policy; wildcards are rejected.
+  Behind a TLS-terminating proxy, configure the public browser origin explicitly.
+- Clients without an `Origin` header still reach the authorization hook.
+  Validate authorization there and validate incoming messages in your handlers.
+- Upgrade handling runs before Astro middleware. Put shared session checks in
+  a function that both the endpoint hook and middleware can call.
+- `start()` and `astro preview` support the endpoint. Astro's development
+  server does not run this Bun WebSocket endpoint. For a custom server, wire
+  the emitted `websocket` and `upgrade` exports alongside the HTTP `handler`.
+- Connections and native pub/sub are local to each worker. Use an application
+  message broker when broadcasts must reach other workers or machines.
+
+### HTTP/2
+
+Opt into Bun's experimental HTTP/2 server support with
+`bun({ server: { http2: true } })`. It serves HTTP/2 prior-knowledge connections
+on plain TCP, or negotiates HTTP/2 through ALPN when TLS is configured. HTTP/1.1
+continues to work. Unix sockets do not accept this option.
+
+WebSocket upgrades use HTTP/1.1. On HTTP/2, Bun applies the most permissive
+request timeout to the shared connection, so an open SSE stream can also keep
+that connection alive for other requests. See [Bun's HTTP server documentation](https://bun.sh/docs/runtime/http/server).
 
 ## Deployment
 

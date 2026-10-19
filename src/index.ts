@@ -28,12 +28,42 @@ export interface Options {
   shutdownTimeoutMs?: number
   server?: ServerOptions
   maxRequestBodySize?: number
+  /** Optional native WebSocket endpoint module, bundled with the server. */
+  websocket?: {
+    entrypoint: string | URL
+    /** Exact path relative to Astro's base. @default /ws */
+    path?: string
+    /** Browser origins allowed to upgrade. Defaults to same origin. */
+    allowedOrigins?: string[]
+  }
 }
 
 export default function bunAdapter(options: Options = {}): AstroIntegration {
   if (options.mode && !['standalone', 'handler'].includes(options.mode))
     throw new Error('Invalid adapter mode')
   validateServerOptions(options.server)
+  if (options.websocket) {
+    const path = options.websocket.path ?? '/ws'
+    if (
+      !path.startsWith('/') ||
+      path.startsWith('//') ||
+      /[?#\\]/.test(path) ||
+      new URL(path, 'http://localhost').pathname !== path
+    )
+      throw new Error('websocket.path must be an exact absolute pathname')
+    const entrypoint = options.websocket.entrypoint
+    if (!(entrypoint instanceof URL) && (typeof entrypoint !== 'string' || !entrypoint.trim()))
+      throw new Error('websocket.entrypoint must identify a local module')
+    if (options.websocket.allowedOrigins !== undefined) {
+      if (!Array.isArray(options.websocket.allowedOrigins))
+        throw new Error('websocket.allowedOrigins must be an array')
+      for (const origin of options.websocket.allowedOrigins) {
+        const parsed = new URL(origin)
+        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== origin)
+          throw new Error('websocket.allowedOrigins must contain exact HTTP or HTTPS origins')
+      }
+    }
+  }
   const buildIdentity = crypto.randomUUID()
   const cacheOptions = options.cache === false ? undefined : options.cache
   const { persistence, ...memoryOptions } = cacheOptions ?? {}
@@ -58,6 +88,7 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
     throw new Error('maxRequestBodySize must be a positive integer')
   const staticCacheControl = options.staticCacheControl ?? 'public, max-age=0, must-revalidate'
   new Headers({ 'cache-control': staticCacheControl })
+  let websocketEntrypoint: string | undefined
   let config: AstroConfig
   let staticHeaders = new Map<string, Headers>()
   return {
@@ -65,6 +96,12 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
     hooks: {
       'astro:config:setup': ({ updateConfig, config: current, command }) => {
         config = current
+        if (options.websocket) {
+          const entrypoint = new URL(options.websocket.entrypoint, current.root)
+          if (entrypoint.protocol !== 'file:')
+            throw new Error('websocket.entrypoint must identify a local module')
+          websocketEntrypoint = fileURLToPath(entrypoint)
+        }
         updateConfig({
           build: { redirects: false },
           ...(options.cache !== false && !current.cache?.provider
@@ -99,11 +136,16 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
                   }
                 },
                 resolveId(id) {
-                  if (id === 'virtual:astro-bun-config') return '\0' + id
+                  if (id === 'virtual:astro-bun-config' || id === 'virtual:astro-bun-websocket')
+                    return '\0' + id
                 },
                 load(id) {
+                  if (id === '\0virtual:astro-bun-websocket')
+                    return websocketEntrypoint
+                      ? `export { default } from ${JSON.stringify(websocketEntrypoint)}`
+                      : 'export default undefined'
                   if (id !== '\0virtual:astro-bun-config') return
-                  return `export default ${JSON.stringify({ mode: options.mode ?? 'standalone', workers, shutdownTimeoutMs, maxRequestBodySize: bodyLimit, server: options.server?.unix ? options.server : { hostname: typeof config.server.host === 'string' ? config.server.host : config.server.host ? '0.0.0.0' : 'localhost', port: config.server.port, ...options.server }, assetManifest: relative(dirname(config.build.serverEntry), 'bun-assets.json').split(sep).join('/') || 'bun-assets.json' })}`
+                  return `export default ${JSON.stringify({ websocket: options.websocket ? { path: config.base.replace(/\/$/, '') + (options.websocket.path ?? '/ws'), allowedOrigins: options.websocket.allowedOrigins } : undefined, mode: options.mode ?? 'standalone', workers, shutdownTimeoutMs, maxRequestBodySize: bodyLimit, server: options.server?.unix ? options.server : { hostname: typeof config.server.host === 'string' ? config.server.host : config.server.host ? '0.0.0.0' : 'localhost', port: config.server.port, ...options.server }, assetManifest: relative(dirname(config.build.serverEntry), 'bun-assets.json').split(sep).join('/') || 'bun-assets.json' })}`
                 },
               },
             ],

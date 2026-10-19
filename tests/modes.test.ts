@@ -418,3 +418,97 @@ await Bun.write(Bun.env.DRAIN_MARKER, 'completed')
     await child.exited
   }
 }, 60_000)
+
+test('bundles an authorized native WebSocket endpoint under the Astro base for start and preview', async () => {
+  const workspace = await build(
+    {
+      astro: { base: '/docs' },
+      adapter: { websocket: { entrypoint: './socket.ts', path: '/live' } },
+    },
+    false,
+    async (directory) => {
+      await Bun.write(
+        join(directory, 'socket.ts'),
+        `export default {
+      async upgrade(request) {
+        await Bun.sleep(1)
+        if (request.headers.get('authorization') !== 'Bearer fixture') return new Response('Unauthorized', {status:401})
+        return {data:{user:'fixture'}}
+      },
+      websocket: { message(socket, message) { socket.send(socket.data.user + ':' + message) } }
+    }`,
+      )
+    },
+  )
+  await rm(join(workspace, 'socket.ts'))
+  const server = await start(workspace)
+  const previewModule = await import(pathToFileURL(join(root, 'dist/preview.js')).href)
+  const preview = await previewModule.default({
+    host: '127.0.0.1',
+    port: 0,
+    allowedHosts: [],
+    serverEntrypoint: pathToFileURL(join(workspace, 'dist/server/entry.mjs')),
+  })
+  const echo = (origin: string) =>
+    new Promise<string>((resolve, reject) => {
+      const socket = new WebSocket(origin.replace('http:', 'ws:') + '/docs/live', {
+        headers: { authorization: 'Bearer fixture', origin },
+      })
+      const timer = setTimeout(() => {
+        socket.close()
+        reject(new Error('WebSocket timed out'))
+      }, 5_000)
+      socket.onopen = () => socket.send('hello')
+      socket.onmessage = (event) => {
+        clearTimeout(timer)
+        socket.close()
+        resolve(String(event.data))
+      }
+      socket.onerror = () => {
+        clearTimeout(timer)
+        socket.close()
+        reject(new Error('WebSocket failed'))
+      }
+    })
+  try {
+    expect(await echo(server.url.origin)).toBe('fixture:hello')
+    expect(await echo(`http://${preview.host}:${preview.port}`)).toBe('fixture:hello')
+    expect((await fetch(server.url.origin + '/docs/live')).status).toBe(426)
+    expect(
+      (
+        await fetch(server.url.origin + '/docs/live', {
+          headers: { upgrade: 'websocket', origin: 'https://untrusted.example' },
+        })
+      ).status,
+    ).toBe(403)
+    expect(
+      (
+        await fetch(server.url.origin + '/docs/live', {
+          headers: { upgrade: 'websocket', origin: server.url.origin },
+        })
+      ).status,
+    ).toBe(401)
+    expect(await (await fetch(server.url.origin + '/docs/about')).text()).toContain('mode about')
+    expect(
+      (
+        await fetch(`http://${preview.host}:${preview.port}/docs/live`, {
+          headers: { host: 'unapproved.example', upgrade: 'websocket' },
+        })
+      ).status,
+    ).toBe(403)
+  } finally {
+    await server.stop(true)
+    await preview.stop()
+  }
+}, 60_000)
+
+test('fails clearly when a configured WebSocket module has no handlers', async () => {
+  const workspace = await build(
+    { adapter: { websocket: { entrypoint: './socket.ts' } } },
+    false,
+    async (directory) => {
+      await Bun.write(join(directory, 'socket.ts'), 'export default {}')
+    },
+  )
+  await expect(start(workspace)).rejects.toThrow('WebSocket module must export')
+}, 60_000)

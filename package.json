@@ -38,6 +38,10 @@
     "./cache": {
       "types": "./dist/cache.d.ts",
       "default": "./dist/cache.js"
+    },
+    "./websocket": {
+      "types": "./dist/websocket.d.ts",
+      "default": "./dist/websocket.js"
     }
   },
   "publishConfig": {

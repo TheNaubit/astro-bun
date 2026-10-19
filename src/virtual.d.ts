@@ -1,5 +1,6 @@
 declare module 'virtual:astro-bun-config' {
   const config: {
+    websocket?: { path: string; allowedOrigins?: string[] }
     mode: 'standalone' | 'handler'
     workers: number
     shutdownTimeoutMs: number
@@ -8,4 +9,9 @@ declare module 'virtual:astro-bun-config' {
     server: import('./runtime-options.js').ServerOptions
   }
   export default config
+}
+
+declare module 'virtual:astro-bun-websocket' {
+  const endpoint: import('./websocket.js').WebSocketEndpoint<object> | undefined
+  export default endpoint
 }
