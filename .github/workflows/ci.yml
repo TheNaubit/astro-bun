@@ -4,11 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
