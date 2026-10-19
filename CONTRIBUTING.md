@@ -27,15 +27,22 @@ The build output goes to `dist/`.
 - Format with `bun run format` and make `bun run lint` pass before opening a pull request.
 - Keep documentation accurate when public behavior changes.
 - Use [Conventional Commits](https://www.conventionalcommits.org): `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, or `ci:`.
-- Do not change `version` by hand. This repository has no automated publishing workflow.
+- Use `npm version patch --no-git-tag-version` (or the appropriate semver increment) to prepare a release.
 
 ## Preparing a public release
 
-Publishing requires an explicit release decision. Before a release, run all checks
-plus `npm pack --dry-run`, inspect the package contents, and publish the scoped
-package with public access. The initial `0.1.0` release uses a maintainer session
-without provenance; future provenance attestations require a supported CI release
-workflow. The GitHub repository visibility is managed separately from npm access.
+Publishing requires an explicit release decision. Run the checks above and
+`npm pack --dry-run`, then commit and push the version change to `main`. Create
+and push the matching `vX.Y.Z` tag to trigger `.github/workflows/publish.yml`.
+The workflow runs Linux and macOS CI before publishing through npm trusted
+publishing with provenance. It verifies that the tag matches the stable package
+version and that its commit belongs to `main`.
+
+The npm trusted publisher must identify GitHub owner `TheNaubit`, repository
+`astro-bun`, workflow `publish.yml`, no environment, and allow direct publishing.
+No npm token secret is required. Keep the repository public for provenance.
+Version `0.1.0` was published manually without provenance; subsequent releases
+use the workflow. Already published versions cannot be reused.
 
 The package already includes `astro-integration` and `withastro` for discovery and
 `astro-adapter` for the Adapters category. Astro reads `name`, `description`, `repository`,
