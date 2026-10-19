@@ -30,6 +30,16 @@ jobs:
           node --input-type=module -e "import fs from 'node:fs'; const p = JSON.parse(fs.readFileSync('package.json', 'utf8')); if (process.env.GITHUB_REF_NAME !== 'v' + p.version || !/^\d+\.\d+\.\d+$/.test(p.version)) throw new Error('Tag must match a stable package version');"
           git merge-base --is-ancestor HEAD origin/main
 
+      - name: Require a verified tag signature
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag_sha=$(git rev-parse "$GITHUB_REF")
+          test "$(git cat-file -t "$tag_sha")" = tag
+          verified=$(gh api "repos/$GH_REPO/git/tags/$tag_sha" --jq '.verification.verified')
+          test "$verified" = true
+
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -53,3 +63,20 @@ jobs:
 
       - name: Publish with trusted publishing and provenance
         run: npm publish --access public --provenance
+
+  release:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release with changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes
+          fi

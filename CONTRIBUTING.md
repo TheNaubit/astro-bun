@@ -33,11 +33,16 @@ The build output goes to `dist/`.
 
 Publishing requires an explicit release decision. Run the checks above and
 `npm pack --dry-run`, then commit and push the version change to `main`. Create
-and push the matching `vX.Y.Z` tag to trigger `.github/workflows/publish.yml`.
+and push a signed matching tag with `git tag -s vX.Y.Z -m "Release vX.Y.Z"`
+and `git push origin vX.Y.Z` to trigger `.github/workflows/publish.yml`.
+Configure `git config --local tag.gpgsign true` in each maintainer checkout
+and use a signing key registered with GitHub.
 The publishing workflow builds and inspects the package, then publishes through
 npm trusted publishing with provenance. It does not run the Linux/macOS test
 matrix. It verifies that the tag matches the stable package
-version and that its commit belongs to `main`.
+version and that its commit belongs to `main`. It also requires GitHub to
+verify the tag signature before publishing. After npm publication succeeds,
+it creates a GitHub release with automatically generated changelog notes.
 
 The npm trusted publisher must identify GitHub owner `TheNaubit`, repository
 `astro-bun`, workflow `publish.yml`, no environment, and allow direct publishing.
