@@ -125,9 +125,47 @@ configured host is `localhost`. The TLS environment pair must be complete.
 
 ## Rendering
 
-### Static pages
+### Static site with selected SSR pages
 
-Use Astro's normal prerender flag for a static page:
+Use `output: 'static'` (Astro's default) when most pages should be generated at
+build time and only selected pages need SSR:
+
+```ts
+import { defineConfig } from 'astro/config'
+import bun from '@nauverse/astro-bun'
+
+export default defineConfig({
+  output: 'static',
+  adapter: bun(),
+})
+```
+
+Opt each page that needs SSR into on-demand rendering:
+
+```astro
+---
+export const prerender = false;
+const renderedAt = new Date().toISOString();
+---
+
+<p>Rendered on demand at {renderedAt}</p>
+```
+
+Other pages remain prerendered. Build and run the application with:
+
+```bash
+bun --bun astro build
+bun dist/server/entry.mjs
+```
+
+The Bun server serves the generated static files and renders the SSR routes.
+A running server is still required for SSR; a static-only host cannot execute
+those routes. If every page is prerendered, you can omit the adapter and deploy
+Astro's generated static output without a production server.
+
+### Static pages in a server-rendered site
+
+With `output: 'server'`, use Astro's prerender flag for a static page:
 
 ```astro
 ---
