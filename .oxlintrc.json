@@ -1,0 +1,8 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "env": {
+    "bun": true,
+    "node": true
+  },
+  "ignorePatterns": ["dist/**", "node_modules/**", "tests/fixtures/**"]
+}
