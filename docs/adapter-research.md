@@ -109,4 +109,4 @@ Use platform APIs for request/response headers and standard Web Fetch types.
    range identity selection, static policy overrides, and opt-out behavior.
 6. Server options have unit/runtime coverage for configuration, environment,
    and `start()` precedence, Unix sockets, TLS, and trusted-proxy CIDRs. Linux
-   worker lifecycle coverage remains pending CI verification.
+   worker startup, replacement, repeated-exit cutoff, and shutdown pass in CI.
