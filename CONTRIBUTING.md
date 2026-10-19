@@ -34,8 +34,9 @@ The build output goes to `dist/`.
 Publishing requires an explicit release decision. Run the checks above and
 `npm pack --dry-run`, then commit and push the version change to `main`. Create
 and push the matching `vX.Y.Z` tag to trigger `.github/workflows/publish.yml`.
-The workflow runs Linux and macOS CI before publishing through npm trusted
-publishing with provenance. It verifies that the tag matches the stable package
+The publishing workflow builds and inspects the package, then publishes through
+npm trusted publishing with provenance. It does not run the Linux/macOS test
+matrix. It verifies that the tag matches the stable package
 version and that its commit belongs to `main`.
 
 The npm trusted publisher must identify GitHub owner `TheNaubit`, repository

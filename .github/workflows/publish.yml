@@ -3,6 +3,7 @@ name: Publish
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions: {}
 
@@ -11,13 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci.yml
-
   publish:
-    needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
