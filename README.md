@@ -40,7 +40,7 @@
 - **Deploy a tested build.** Linux and macOS CI exercise real Astro builds, packed-package consumption, and concurrent requests.
 
 > [!NOTE]
-> This package is currently **private and unpublished**. Local installation is documented below; an npm release and Astro directory listing are still to come.
+> Install from npm as `@nauverse/astro-bun`. An Astro integrations directory listing is not yet confirmed.
 
 ## Comparison
 
@@ -85,7 +85,7 @@ Zastinian enables it. Bun documents native same-port HTTP load balancing as
 **Choosing an adapter.** Start with your Astro version. For Astro 7, this
 adapter and Wyatt declare compatible peer ranges; this adapter additionally
 includes static precompression, a preview entrypoint, and configurable native
-server transports. It is currently available from this private checkout only.
+server transports. Install it from npm as `@nauverse/astro-bun`.
 For an existing Astro 4–6 project, compare the matching version range before
 planning a migration. If your whole site is static, you do not need an SSR adapter.
 
@@ -115,20 +115,10 @@ Build and run the application through Bun using the commands below.
 
 ## Installation
 
-`@nauverse/astro-bun` is private and unpublished. Link a local checkout while developing against it:
+Install in your Astro application:
 
 ```bash
-git clone git@github.com:TheNaubit/astro-bun.git
-cd astro-bun
-bun install --frozen-lockfile --ignore-scripts
-bun run build
-bun link
-```
-
-In the Astro application:
-
-```bash
-bun link @nauverse/astro-bun
+bun add @nauverse/astro-bun
 ```
 
 ## Configuration
@@ -544,7 +534,7 @@ Astro session support requires an explicit session driver in the application's A
 
 ## Integration directory
 
-The package metadata follows [Astro's integration-library guidance](https://docs.astro.build/en/guides/integrations/#integrations-library), including the discovery and adapter-category keywords. The package is still private and unpublished; it is not yet listed. See the [public-release steps](./CONTRIBUTING.md#preparing-a-public-release).
+The package metadata follows [Astro's integration-library guidance](https://docs.astro.build/en/guides/integrations/#integrations-library), including the discovery and adapter-category keywords. The package is published on npm; a directory listing is not yet confirmed. See the [public-release steps](./CONTRIBUTING.md#preparing-a-public-release).
 
 ## Development
 
