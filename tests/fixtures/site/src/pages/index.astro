@@ -1,0 +1,5 @@
+---
+export const prerender = true;
+Astro.response.headers.set('x-static-header', 'preserved');
+---
+<html><body><h1>Static home</h1></body></html>

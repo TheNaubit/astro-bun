@@ -1,0 +1,47 @@
+name: Bug report
+description: Report behavior that differs from the documented adapter contract
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Package version or commit
+      placeholder: '0.1.0 or a commit SHA'
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Rendering mode
+      options:
+        - Static output
+        - SSR
+        - ISR
+        - Build or configuration
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Include the relevant Astro configuration, route, and steps to reproduce. Do not include credentials or private application data.
+      render: ts
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: 'Bun 1.4.3, Astro 7.4.0, macOS 26'

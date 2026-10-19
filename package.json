@@ -1,0 +1,72 @@
+{
+  "name": "@nauverse/astro-bun",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bun-native Astro adapter for static pages, SSR, and opt-in ISR.",
+  "keywords": [
+    "astro",
+    "astro-adapter",
+    "astro-integration",
+    "bun",
+    "isr",
+    "ssr",
+    "static",
+    "withastro"
+  ],
+  "homepage": "https://github.com/TheNaubit/astro-bun#readme",
+  "bugs": {
+    "url": "https://github.com/TheNaubit/astro-bun/issues"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Nauverse",
+    "url": "https://nauverse.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TheNaubit/astro-bun.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cache": {
+      "types": "./dist/cache.d.ts",
+      "default": "./dist/cache.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "test:run": "bun test",
+    "lint": "oxlint --deny-warnings",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "prepack": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "astro": "7.4.0",
+    "oxfmt": "0.73.0",
+    "oxlint": "1.88.0",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "astro": "^7.4.0"
+  },
+  "engines": {
+    "bun": ">=1.4.3"
+  }
+}
