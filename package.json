@@ -1,6 +1,6 @@
 {
   "name": "@nauverse/astro-bun",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Bun-native Astro adapter for static pages, SSR, and opt-in ISR.",
   "keywords": [
     "astro",

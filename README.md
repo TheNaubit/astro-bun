@@ -7,9 +7,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/TheNaubit/astro-bun/actions/workflows/ci.yml">
-    <img src="https://github.com/TheNaubit/astro-bun/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status">
-  </a>
   <a href="https://astro.build">
     <img src="https://img.shields.io/badge/Astro-7.4%2B-BC52EE?logo=astro&logoColor=white" alt="Astro 7.4 or later within version 7">
   </a>
@@ -17,7 +14,7 @@
     <img src="https://img.shields.io/badge/Bun-1.4.3%2B-14151A?logo=bun&logoColor=white" alt="Bun 1.4.3 or later">
   </a>
   <a href="https://github.com/TheNaubit/astro-bun/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/TheNaubit/astro-bun?style=flat" alt="MIT license">
+    <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license">
   </a>
 </p>
 
