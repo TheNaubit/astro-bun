@@ -106,7 +106,7 @@ capability, not a defect by itself.
 | Programmatic `start(options)`       | Legacy `start()`                       | No                       | Legacy `start()`       | Legacy `start()`           | No                      | **Implemented and unit-tested:** accepts the typed safe server options; explicit TCP start values override environment and configured values ([`src/server.ts`](../src/server.ts), [`tests/runtime-options.test.ts`](../tests/runtime-options.test.ts)).                                                                                                                                                           |
 | Unix socket                         | `unix`, `UNIX`                         | No                       | No                     | Host-suffix/API convention | No                      | **Implemented and emitted-build tested:** explicit `server.unix` or `UNIX`; it cannot be mixed with TCP settings ([`src/runtime-options.ts`](../src/runtime-options.ts), [`tests/runtime-options.test.ts`](../tests/runtime-options.test.ts), [`tests/integration.test.ts`](../tests/integration.test.ts)). Note known `clientAddress` limitation: [Nuro #14](https://github.com/NuroDev/astro-bun/issues/14).     |
 | TLS cert/key                        | `tls`, `TLS_CERT_PATH`, `TLS_KEY_PATH` | No                       | No                     | `tls`, env overrides       | No                      | **Implemented and emitted-build tested:** typed paths are opened by Bun at runtime; complete environment pair overrides configured TLS ([`src/runtime-options.ts`](../src/runtime-options.ts), [`tests/runtime-options.test.ts`](../tests/runtime-options.test.ts), [`tests/integration.test.ts`](../tests/integration.test.ts)).                                                                                  |
-| Multi-process cluster / `reusePort` | Nuro `cluster`; no `reusePort`         | No                       | No                     | `cluster`, `reusePort`     | No                      | **Implemented:** Linux-only native Bun process supervisor starts workers with `reusePort`, restarts crashes, and applies a crash-rate stop ([`src/cluster.ts`](../src/cluster.ts), [`src/server.ts`](../src/server.ts)). **Verified in Linux CI:** two-worker startup, crash replacement, repeated-exit cutoff, and graceful shutdown ([CI run](https://github.com/TheNaubit/astro-bun/actions/runs/39234903761)). |
+| Multi-process cluster / `reusePort` | Nuro `cluster`; no `reusePort`         | No                       | No                     | `cluster`, `reusePort`     | No                      | **Implemented:** Linux-only native Bun process supervisor starts workers with `reusePort`, restarts crashes, and applies a crash-rate stop ([`src/cluster.ts`](../src/cluster.ts), [`src/server.ts`](../src/server.ts)). **Verified in Linux CI:** two-worker startup, crash replacement, repeated-exit cutoff, and graceful shutdown ([CI run](https://github.com/TheNaubit/astro-bun/actions/runs/39238106563)). |
 | `idleTimeout` / low-memory mode     | No                                     | No                       | No                     | Yes                        | No                      | **Implemented:** validated `idleTimeout`, `reusePort`, and TLS low-memory option are passed to Bun ([`src/runtime-options.ts`](../src/runtime-options.ts), [`src/server.ts`](../src/server.ts)).                                                                                                                                                                                                                   |
 | Request-body limit                  | No                                     | No                       | No                     | `maxRequestBodySize`       | No                      | **Implemented and unit-tested:** 10 MiB default, positive safe integer validation, passed to `Bun.serve` ([`src/index.ts`](../src/index.ts), [`src/server.ts`](../src/server.ts), [`tests/options.test.ts`](../tests/options.test.ts)).                                                                                                                                                                            |
 | Signal shutdown                     | SIGINT/SIGTERM, exits                  | ISR SIGINT/SIGTERM flush | No                     | SIGINT/SIGTERM, exits      | ISR shutdown            | **Implemented and integration-tested:** SIGINT/SIGTERM stops server and drains active background ISR work within configurable `shutdownTimeoutMs` ([`src/server.ts`](../src/server.ts), [`tests/modes.test.ts`](../tests/modes.test.ts)).                                                                                                                                                                          |
@@ -129,11 +129,11 @@ does not prove their implementations are bug-free.
 
 ## Validation result
 
-[CI run 39234903761](https://github.com/TheNaubit/astro-bun/actions/runs/39234903761)
-verified implementation commit `72e7c15` on Bun 1.4.3 and Astro 7.4.0:
+[CI run 39238106563](https://github.com/TheNaubit/astro-bun/actions/runs/39238106563)
+verified implementation commit `526f9e5` on Bun 1.4.3 and Astro 7.4.0:
 
-- Ubuntu 24.04: 88 passing tests, one platform-specific skip, zero failures.
-- macOS 15: 87 passing tests, two Linux-only skips, zero failures.
+- Ubuntu 24.04: 105 passing tests, one platform-specific skip, zero failures.
+- macOS 15: 104 passing tests, two Linux-only skips, zero failures.
 - Both jobs passed lint, formatting, type checking, and build.
 - The suite includes packed-package imports and helper invalidation, actual
   separate-process SQLite invalidation, and 1,200 mixed requests over 10.5 seconds.
@@ -147,7 +147,19 @@ Maintain these fixtures as Astro and Bun evolve.
 
 ## Additional native Bun capabilities
 
-These additions extend the adapter beyond the comparison above:
+The same pinned peer sources were checked for native WebSocket configuration,
+`http2` server options, and per-request `server.timeout` calls:
+
+| Capability                               | Nuro         | Wyatt        | Ido          | Zastinian                | Scaliir      | Our status                                               |
+| ---------------------------------------- | ------------ | ------------ | ------------ | ------------------------ | ------------ | -------------------------------------------------------- |
+| Automatic per-request SSE timeout policy | Not provided | Not provided | Not provided | Global idle timeout only | Not provided | Implemented and integration-tested                       |
+| Native WebSocket endpoint configuration  | Not provided | Not provided | Not provided | Not provided             | Not provided | Implemented and integration-tested                       |
+| Opt-in native HTTP/2                     | Not provided | Not provided | Not provided | Not provided             | Not provided | Implemented and integration-tested; experimental Bun API |
+
+The SSE row concerns automatic timeout management, not whether Astro can
+produce an event stream. The HTTP/2 row excludes reverse-proxy termination.
+
+Implementation and validation:
 
 - **SSE timeout control:** successful event streams use Bun's per-request
   timeout API. Tests cover quiet periods, explicit limits, opt-out, ordinary
