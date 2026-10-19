@@ -1,3 +1,4 @@
+import { isRequestPrivate } from './request-context.js'
 import type { CacheProvider, CacheProviderFactory, InvalidateOptions } from 'astro'
 import { BaseApp } from 'astro/app'
 import { PersistentCacheStore, type PersistentCacheOptions } from './cache-store.js'
@@ -422,6 +423,7 @@ const createBunCache: CacheProviderFactory<BunCacheOptions> = (options) => {
   function canRead(request: Request): boolean {
     return (
       request.method === 'GET' &&
+      !isRequestPrivate(request) &&
       !request.headers.has('cookie') &&
       !request.headers.has('authorization')
     )

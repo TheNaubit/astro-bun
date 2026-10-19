@@ -83,6 +83,21 @@ server transports. Install it from npm as `@nauverse/astro-bun`.
 For an existing Astro 4–6 project, compare the matching version range before
 planning a migration. If your whole site is static, you do not need an SSR adapter.
 
+### Compared with the official Node adapter
+
+| Capability                                      | `@astrojs/node`                | This adapter               |
+| ----------------------------------------------- | ------------------------------ | -------------------------- |
+| Server runtime                                  | Node.js                        | Bun                        |
+| Embedding interface                             | Node HTTP / Express middleware | Web `Request` / `Response` |
+| Default filesystem sessions                     | ✅                             | ✅                         |
+| Embedded locals and unmatched-route fallthrough | ✅                             | ✅                         |
+| Optional HTML buffering                         | ✅                             | ✅                         |
+| Static ETag and date preconditions              | ✅                             | ✅                         |
+
+Use the official adapter for Node.js deployments and this adapter for Bun-native
+servers. The [feature audit](./docs/feature-parity.md#official-node-adapter-comparison)
+describes the reviewed source and intentional differences.
+
 ## Requirements
 
 | Dependency | Supported version |
@@ -143,6 +158,7 @@ adapter: bun({
   // Default: one process. Multiple workers require Linux and a fixed TCP port.
   workers: 1,
   shutdownTimeoutMs: 10_000,
+  experimentalDisableStreaming: false,
 
   server: {
     // These are the build-configured defaults. At runtime, HOST and PORT take
@@ -509,7 +525,51 @@ When embedding `handler` in another server, configure that server's request
 limits and error boundary. Handler mode does not infer peer or forwarded IP
 addresses because the embedding server owns that trust boundary.
 
-Astro session support requires an explicit session driver in the application's Astro configuration. This adapter does not choose a default session driver.
+### Sessions
+
+Sessions use Astro's filesystem driver by default, stored under `sessions/` in
+Astro's configured `cacheDir`. Your `session.cookie` and `session.ttl` settings
+are preserved. Use `session: false` to disable sessions, or configure your own
+`session.driver` to select different storage.
+
+The default directory must be writable at runtime and persist across restarts.
+For containers, relocated builds, or multiple hosts, configure an explicit
+driver and stable storage location appropriate for your deployment. Session
+storage is separate from the adapter's optional ISR database.
+
+### Embedding in a Bun server
+
+Use `mode: 'handler'` and import the built entrypoint. `createHandler()` can
+resolve per-request `Astro.locals` and delegate unmatched URLs to your router:
+
+```ts
+import { createHandler } from './dist/server/entry.mjs'
+import { getSession } from './auth.js'
+
+const handle = createHandler({
+  locals: async (request) => ({ user: await getSession(request) }),
+  fallback: () => new Response('Not found', { status: 404 }),
+})
+
+Bun.serve({ fetch: (request, server) => handle(request, server) })
+```
+
+The locals callback runs for dynamic Astro requests. These responses bypass the
+built-in ISR cache and receive `Cache-Control: private, no-store` and
+`CDN-Cache-Control: no-store`. Custom cache providers must implement equivalent
+personalization safeguards. Static files are served before locals are resolved.
+Fallthrough applies only to unmatched URLs, not a matched endpoint that returns 404. Without a fallback, Astro renders its own error page.
+
+### HTML buffering
+
+`experimentalDisableStreaming: true` buffers Astro-rendered HTML for hosts that
+require a complete response. Streaming remains enabled by default. This option
+does not buffer SSE or other endpoint response streams.
+
+Static builds support `directory`, `file`, and `preserve` output formats with
+clean page URLs. Static files support ETag and modification-date preconditions. Hidden files are
+excluded from static serving, except files under `/.well-known/` (relative to
+Astro's base).
 
 ## Integration directory
 

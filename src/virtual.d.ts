@@ -1,6 +1,7 @@
 declare module 'virtual:astro-bun-config' {
   const config: {
     websocket?: { path: string; allowedOrigins?: string[] }
+    experimentalDisableStreaming: boolean
     mode: 'standalone' | 'handler'
     workers: number
     shutdownTimeoutMs: number

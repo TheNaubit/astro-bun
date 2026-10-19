@@ -1,4 +1,5 @@
 import config from 'virtual:astro-bun-config'
+import { markRequestPrivate } from './request-context.js'
 import websocketEndpoint from 'virtual:astro-bun-websocket'
 import { handleWebSocketUpgrade } from './websocket.js'
 import { createApp } from 'astro/app/entrypoint'
@@ -24,7 +25,7 @@ if (
   )
 
 setGetEnv((key) => Bun.env[key])
-const app = createApp()
+const app = createApp({ streaming: !config.experimentalDisableStreaming })
 const manifestURL = new URL(config.assetManifest, import.meta.url)
 const assets = (await Bun.file(manifestURL).json()) as AssetManifest
 const serveStatic = createStaticHandler(assets, manifestURL)
@@ -38,16 +39,45 @@ function waitUntil(promise: Promise<unknown>) {
   void task.finally(() => pending.delete(task))
 }
 
+export interface EmbeddedHandlerOptions {
+  /** Resolve per-request Astro.locals. Responses bypass adapter ISR and shared caches. */
+  locals?: (request: Request) => object | Promise<object>
+  /** Handle URLs that do not match an Astro route or static asset. */
+  fallback?: (request: Request) => Response | Promise<Response>
+}
+
+/** Create a Fetch handler for embedding Astro in a Bun server or router. */
+export function createHandler(options: EmbeddedHandlerOptions = {}) {
+  return (request: Request, server?: Pick<Bun.Server<object>, 'requestIP' | 'timeout'>) =>
+    renderRequest(request, server, undefined, config.server.sseIdleTimeout ?? 0, options)
+}
+
 export async function handler(
   request: Request,
   server?: Pick<Bun.Server<object>, 'requestIP' | 'timeout'>,
   trustedProxies?: typeof defaultTrustedProxies | null,
   sseIdleTimeout: number | false = config.server.sseIdleTimeout ?? 0,
 ): Promise<Response> {
+  return renderRequest(request, server, trustedProxies, sseIdleTimeout)
+}
+
+async function renderRequest(
+  request: Request,
+  server?: Pick<Bun.Server<object>, 'requestIP' | 'timeout'>,
+  trustedProxies?: typeof defaultTrustedProxies | null,
+  sseIdleTimeout: number | false = config.server.sseIdleTimeout ?? 0,
+  embedded: EmbeddedHandlerOptions = {},
+): Promise<Response> {
   const staticResponse = serveStatic(request)
   if (staticResponse) return staticResponse
-  const response = await app.render(request, {
+  if (embedded.fallback && !app.match(request, true)) return embedded.fallback(request)
+  const locals = embedded.locals ? await embedded.locals(request) : undefined
+  if (embedded.locals && (!locals || typeof locals !== 'object' || Array.isArray(locals)))
+    throw new TypeError('Embedded locals must resolve to an object')
+  if (locals) markRequestPrivate(request)
+  let response = await app.render(request, {
     addCookieHeader: true,
+    locals,
     clientAddress: server
       ? getClientAddress(
           request,
@@ -59,6 +89,15 @@ export async function handler(
     prerenderedErrorPageFetch: async (path) =>
       serveStatic(new Request(new URL(path, request.url))) ?? new Response(null, { status: 404 }),
   })
+  if (locals) {
+    response = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    })
+    response.headers.set('cache-control', 'private, no-store')
+    response.headers.set('cdn-cache-control', 'no-store')
+  }
   if (
     server &&
     sseIdleTimeout !== false &&

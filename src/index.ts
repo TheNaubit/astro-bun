@@ -2,6 +2,7 @@ import { realpath } from 'node:fs/promises'
 import { dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AstroConfig, AstroIntegration } from 'astro'
+import { sessionDrivers } from 'astro/config'
 import type { BunCacheOptions as CacheOptions } from './cache.js'
 import { type ServerOptions, validateServerOptions } from './runtime-options.js'
 import { compressAsset } from './compression.js'
@@ -26,6 +27,8 @@ export interface Options {
   /** Number of supervised Bun processes. More than one requires Linux. */
   workers?: number
   shutdownTimeoutMs?: number
+  /** Buffer Astro-rendered HTML; endpoint streams remain streaming. @default false */
+  experimentalDisableStreaming?: boolean
   server?: ServerOptions
   maxRequestBodySize?: number
   /** Optional native WebSocket endpoint module, bundled with the server. */
@@ -41,6 +44,11 @@ export interface Options {
 export default function bunAdapter(options: Options = {}): AstroIntegration {
   if (options.mode && !['standalone', 'handler'].includes(options.mode))
     throw new Error('Invalid adapter mode')
+  if (
+    options.experimentalDisableStreaming !== undefined &&
+    typeof options.experimentalDisableStreaming !== 'boolean'
+  )
+    throw new Error('experimentalDisableStreaming must be a boolean')
   validateServerOptions(options.server)
   if (options.websocket) {
     const path = options.websocket.path ?? '/ws'
@@ -94,8 +102,19 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
   return {
     name: '@nauverse/astro-bun',
     hooks: {
-      'astro:config:setup': ({ updateConfig, config: current, command }) => {
+      'astro:config:setup': ({ updateConfig, config: current, command, logger }) => {
         config = current
+        let session = current.session
+        if (session !== false && !session?.driver) {
+          logger.info('Enabling sessions with filesystem storage')
+          session = {
+            driver: sessionDrivers.fsLite({
+              base: fileURLToPath(new URL('sessions', current.cacheDir)),
+            }),
+            cookie: session?.cookie,
+            ttl: session?.ttl,
+          }
+        }
         if (options.websocket) {
           const entrypoint = new URL(options.websocket.entrypoint, current.root)
           if (entrypoint.protocol !== 'file:')
@@ -104,6 +123,7 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
         }
         updateConfig({
           build: { redirects: false },
+          session,
           ...(options.cache !== false && !current.cache?.provider
             ? {
                 cache: {
@@ -145,7 +165,7 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
                       ? `export { default } from ${JSON.stringify(websocketEntrypoint)}`
                       : 'export default undefined'
                   if (id !== '\0virtual:astro-bun-config') return
-                  return `export default ${JSON.stringify({ websocket: options.websocket ? { path: config.base.replace(/\/$/, '') + (options.websocket.path ?? '/ws'), allowedOrigins: options.websocket.allowedOrigins } : undefined, mode: options.mode ?? 'standalone', workers, shutdownTimeoutMs, maxRequestBodySize: bodyLimit, server: options.server?.unix ? options.server : { hostname: typeof config.server.host === 'string' ? config.server.host : config.server.host ? '0.0.0.0' : 'localhost', port: config.server.port, ...options.server }, assetManifest: relative(dirname(config.build.serverEntry), 'bun-assets.json').split(sep).join('/') || 'bun-assets.json' })}`
+                  return `export default ${JSON.stringify({ websocket: options.websocket ? { path: config.base.replace(/\/$/, '') + (options.websocket.path ?? '/ws'), allowedOrigins: options.websocket.allowedOrigins } : undefined, mode: options.mode ?? 'standalone', workers, shutdownTimeoutMs, experimentalDisableStreaming: options.experimentalDisableStreaming ?? false, maxRequestBodySize: bodyLimit, server: options.server?.unix ? options.server : { hostname: typeof config.server.host === 'string' ? config.server.host : config.server.host ? '0.0.0.0' : 'localhost', port: config.server.port, ...options.server }, assetManifest: relative(dirname(config.build.serverEntry), 'bun-assets.json').split(sep).join('/') || 'bun-assets.json' })}`
                 },
               },
             ],
@@ -200,6 +220,9 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
           onlyFiles: true,
           followSymlinks: false,
         })) {
+          const segments = file.split('/')
+          if (segments[0] !== '.well-known' && segments.some((segment) => segment.startsWith('.')))
+            continue
           const absolute = await realpath(resolve(root, file))
           if (!absolute.startsWith(root + sep))
             throw new Error('Static asset escapes client directory')
@@ -210,6 +233,7 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
           const etag = `"${hasher.digest('hex')}"`
           const headers: Record<string, string> = {
             etag: etag,
+            'last-modified': new Date(blob.lastModified).toUTCString(),
             'content-type': file.endsWith('.html') ? 'text/html; charset=utf-8' : blob.type,
             'cache-control': staticCacheControl,
             'x-astro-cache': 'STATIC',
@@ -225,7 +249,7 @@ export default function bunAdapter(options: Options = {}): AstroIntegration {
             const route = pathname.slice(0, -'index.html'.length)
             names.push(route)
             if (route !== '/') names.push(route.slice(0, -1))
-          } else if (config.build.format === 'file' && file.endsWith('.html')) {
+          } else if (['file', 'preserve'].includes(config.build.format) && file.endsWith('.html')) {
             names.push(pathname.slice(0, -5), pathname.slice(0, -5) + '/')
           }
           const routeHeaders = names

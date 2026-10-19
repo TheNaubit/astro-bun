@@ -512,3 +512,26 @@ test('fails clearly when a configured WebSocket module has no handlers', async (
   )
   await expect(start(workspace)).rejects.toThrow('WebSocket module must export')
 }, 60_000)
+
+test('serves mixed directory and file pages with build.format preserve', async () => {
+  const workspace = await build(
+    { astro: { output: 'static', build: { format: 'preserve' }, base: '/docs' } },
+    true,
+    async (directory) => {
+      await Bun.write(join(directory, 'src/pages/flat.astro'), '<p>flat preserved page</p>')
+    },
+  )
+  const server = await start(workspace)
+  try {
+    const flat = await fetch(server.url + 'docs/flat')
+    expect(flat.status).toBe(200)
+    expect(await flat.text()).toContain('flat preserved page')
+    expect(await (await fetch(server.url + 'docs/flat.html')).text()).toContain(
+      'flat preserved page',
+    )
+    expect(await (await fetch(server.url + 'docs/about')).text()).toContain('mode about')
+    expect(await (await fetch(server.url + 'docs/')).text()).toContain('mode home')
+  } finally {
+    await server.stop(true)
+  }
+}, 60_000)
